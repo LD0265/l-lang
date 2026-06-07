@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+    "l-lang/ir",
+    "l-lang/compiler-entry",
+    "l-lang/lexer",
+    "l-lang/parser",
+    "l-lang/semantic",
+    "l-lang/util",
+    "l-lang/codegen",
+]
