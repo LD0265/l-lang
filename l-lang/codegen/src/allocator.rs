@@ -19,7 +19,12 @@ impl Allocator {
     }
 
     pub fn get_variable_offset(&self, id: &SymbolId) -> usize {
-        *self.stack_variables.get(id).unwrap()
+        *self.stack_variables.get(id).unwrap_or_else(|| {
+            panic!(
+                "no stack slot for SymbolId({:?}) — was it ever allocated?",
+                id.0
+            )
+        })
     }
 
     pub fn get_ra_offset(&self) -> Option<usize> {
@@ -41,10 +46,13 @@ impl Allocator {
     }
 
     pub fn insert_ra(&mut self) {
+        // align to 4 bytes before storing $ra
+        self.stack_size = (self.stack_size + 3) & !3;
         self.ra_offset = Some(self.stack_size);
         self.stack_size += 4;
     }
 
+    // needed for mips apparently
     pub fn align8(&mut self) {
         self.stack_size = (self.stack_size + 7) & !7
     }

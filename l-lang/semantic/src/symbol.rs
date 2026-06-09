@@ -22,7 +22,7 @@ pub enum SymbolKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
 pub struct SymbolId(pub usize);
 
 impl SymbolId {

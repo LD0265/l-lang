@@ -68,6 +68,26 @@ impl Lexer {
                 Ok(Token::Comma)
             }
 
+            '+' => {
+                self.advance();
+                Ok(Token::Plus)
+            }
+
+            '-' => {
+                self.advance();
+                Ok(Token::Minus)
+            }
+
+            '*' => {
+                self.advance();
+                Ok(Token::Star)
+            }
+
+            '/' => {
+                self.advance();
+                Ok(Token::Slash)
+            }
+
             '=' => self.scan_equal(),
 
             '0'..='9' => self.scan_number(false),

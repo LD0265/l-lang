@@ -8,11 +8,6 @@ pub struct Parameter {
 
 #[derive(Debug, Clone)]
 pub enum Statement {
-    Instruction {
-        opcode: String,
-        operands: Vec<String>,
-    },
-
     Label {
         name: String,
         body: Vec<Statement>,
@@ -23,6 +18,12 @@ pub enum Statement {
         name: String,
         params: Vec<Parameter>,
         body: Vec<Statement>,
+        line: usize,
+    },
+
+    FunctionCall {
+        name: String,
+        args: Vec<Expression>,
         line: usize,
     },
 

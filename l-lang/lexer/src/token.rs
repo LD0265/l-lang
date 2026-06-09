@@ -1,4 +1,4 @@
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Token {
     Void,
     I32,
@@ -15,6 +15,10 @@ pub enum Token {
     Identifier(String),
 
     Equal,
+    Plus,
+    Minus,
+    Star,
+    Slash,
 
     LeftParen,
     RightParen,

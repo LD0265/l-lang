@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 ir = { path = "../ir" }
 semantic = { path = "../semantic" }
+parser = { path = "../parser" }

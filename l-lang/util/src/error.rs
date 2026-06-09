@@ -6,6 +6,7 @@ pub type Result<T> = std::result::Result<T, CompileError>;
 pub enum CompileError {
     LexError { message: String, line: usize },
     ParseError { message: String, line: usize },
+    SemanticError { message: String, line: usize },
     CodeGenError { message: String, line: usize },
     CompilerError { message: String, line: usize },
 }
@@ -19,6 +20,10 @@ impl fmt::Display for CompileError {
 
             CompileError::ParseError { message, line } => {
                 write!(f, "Parse error at line {}: {}", line, message)
+            }
+
+            CompileError::SemanticError { message, line } => {
+                write!(f, "Semantic error at line {}: {}", line, message)
             }
 
             CompileError::CodeGenError { message, line } => {

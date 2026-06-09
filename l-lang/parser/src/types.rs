@@ -6,7 +6,7 @@ pub enum TypeSize {
     DoubleWord,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 pub enum Type {
     Void,
     Bool,

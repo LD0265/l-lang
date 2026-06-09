@@ -1,0 +1,317 @@
+use parser::expression::Expression;
+use semantic::{
+    program::SemanticProgram,
+    scope::ScopeId,
+    statement::{SemanticParam, SemanticStatement},
+    symbol::{Symbol, SymbolId, SymbolKind},
+};
+
+use crate::{
+    instruction::{IrFunction, IrInstruction, IrReg, IrType, IrValue},
+    program::IrProgram,
+};
+
+pub struct IrGenerator {
+    program: SemanticProgram,
+    reg_counter: usize,
+    free_regs: Vec<usize>,
+    current_scope_id: usize,
+}
+
+impl IrGenerator {
+    pub fn new(program: SemanticProgram) -> Self {
+        Self {
+            program,
+            reg_counter: 0,
+            free_regs: Vec::new(),
+            current_scope_id: 0,
+        }
+    }
+
+    pub fn generate(&mut self) -> IrProgram {
+        let mut functions = Vec::new();
+
+        for stmt in &self.program.body.clone() {
+            if let SemanticStatement::SemanticFunction {
+                symbol,
+                return_type,
+                body,
+                params,
+                ..
+            } = stmt
+            {
+                self.current_scope_id = self
+                    .program
+                    .scope_table
+                    .iter()
+                    .position(|s| match &s.kind {
+                        semantic::scope::ScopeType::FunctionBody { parent, .. } => parent == symbol,
+                        _ => false,
+                    })
+                    .unwrap_or(0);
+
+                self.reg_counter = 0;
+
+                let name = self.lookup(symbol).name.clone();
+                let ir_return_type = IrType::from(return_type);
+
+                let mut allocs = Vec::new();
+                let mut rest = Vec::new();
+
+                self.emit_store_params(params, &mut allocs, &mut rest);
+
+                for s in body {
+                    self.emit_statement(s, &mut allocs, &mut rest);
+                }
+
+                let needs_ra = rest.iter().any(|i| matches!(i, IrInstruction::Call { .. }));
+
+                let mut instructions = allocs;
+                if needs_ra {
+                    instructions.push(IrInstruction::SaveRa);
+                }
+
+                instructions.extend(rest);
+
+                functions.push(IrFunction {
+                    name,
+                    return_type: ir_return_type,
+                    instructions,
+                });
+            }
+        }
+
+        IrProgram { functions }
+    }
+
+    fn fresh_reg(&mut self) -> IrReg {
+        if let Some(r) = self.free_regs.pop() {
+            IrReg::Temp(r)
+        } else {
+            let r = self.reg_counter;
+            self.reg_counter += 1;
+            IrReg::Temp(r)
+        }
+    }
+
+    fn free_reg(&mut self, reg: IrReg) {
+        if let IrReg::Temp(n) = reg {
+            self.free_regs.push(n);
+        }
+    }
+
+    fn emit_store_params(
+        &mut self,
+        params: &Vec<SemanticParam>,
+        allocs: &mut Vec<IrInstruction>,
+        rest: &mut Vec<IrInstruction>,
+    ) {
+        let mut i = 0;
+        for param in params {
+            let ir_type = IrType::from(&param.param_type);
+            let symbol = param.symbol;
+
+            allocs.push(IrInstruction::Alloc {
+                ir_type: ir_type.clone(),
+                symbol,
+            });
+
+            rest.push(IrInstruction::StoreStack {
+                ir_type,
+                symbol,
+                src: IrReg::Arg(i),
+            });
+
+            i += 1;
+        }
+    }
+
+    fn emit_statement(
+        &mut self,
+        stmt: &SemanticStatement,
+        allocs: &mut Vec<IrInstruction>,
+        rest: &mut Vec<IrInstruction>,
+    ) {
+        match stmt {
+            SemanticStatement::SemanticVarDecl {
+                symbol,
+                initializer,
+            } => {
+                let sym = self.lookup(symbol).clone();
+                if let SymbolKind::Variable { ref var_type, .. } = sym.kind {
+                    allocs.push(IrInstruction::Alloc {
+                        ir_type: IrType::from(var_type),
+                        symbol: symbol.clone(),
+                    });
+
+                    if let Some(expr) = initializer {
+                        let (reg, store_instrs) = self.emit_expression(expr);
+                        rest.extend(store_instrs);
+                        rest.push(IrInstruction::StoreStack {
+                            ir_type: IrType::from(var_type),
+                            symbol: symbol.clone(),
+                            src: reg,
+                        });
+                    }
+                }
+            }
+
+            SemanticStatement::SemanticFunctionCall { name, args, .. } => {
+                // evaluate each arg and move into $a0-$a3
+                for (i, arg) in args.iter().enumerate() {
+                    let (reg, instrs) = self.emit_expression(arg);
+                    rest.extend(instrs);
+                    rest.push(IrInstruction::StoreImm {
+                        dest: IrReg::Arg(i),
+                        value: IrValue::Reg(reg),
+                    });
+                }
+
+                rest.push(IrInstruction::Call {
+                    function_name: name.clone(),
+                });
+            }
+
+            SemanticStatement::SemanticAssign { symbol, value } => {
+                let sym = self.lookup(symbol).clone();
+                if let SymbolKind::Variable { ref var_type, .. } = sym.kind {
+                    let (reg, store_instrs) = self.emit_expression(value);
+                    rest.extend(store_instrs);
+                    rest.push(IrInstruction::StoreStack {
+                        ir_type: IrType::from(var_type),
+                        symbol: symbol.clone(),
+                        src: reg,
+                    });
+                }
+            }
+
+            SemanticStatement::SemanticReturn { value } => {
+                if let Some(expr) = value {
+                    let (reg, instrs) = self.emit_expression(expr);
+                    rest.extend(instrs);
+                    rest.push(IrInstruction::StoreImm {
+                        dest: IrReg::RetVal,
+                        value: IrValue::Reg(reg),
+                    });
+                }
+                rest.push(IrInstruction::Ret);
+            }
+
+            SemanticStatement::SemanticFunction { .. } => {
+                panic!("Nested functions not supported");
+            }
+        }
+    }
+
+    // returns the register the result lands in, plus any instructions needed
+    fn emit_expression(&mut self, expr: &Expression) -> (IrReg, Vec<IrInstruction>) {
+        match expr {
+            Expression::Integer(n) => {
+                let dest = self.fresh_reg();
+                (
+                    dest,
+                    vec![IrInstruction::StoreImm {
+                        dest,
+                        value: IrValue::Immediate(*n),
+                    }],
+                )
+            }
+
+            Expression::Bool(b) => {
+                let dest = self.fresh_reg();
+                (
+                    dest,
+                    vec![IrInstruction::StoreImm {
+                        dest,
+                        value: IrValue::Immediate(if *b { 1 } else { 0 }),
+                    }],
+                )
+            }
+
+            Expression::Identifier(name) => {
+                let (sym_id, ir_type) = {
+                    let mut scope_id = self.current_scope_id;
+                    let sym = loop {
+                        let scope = &self.program.scope_table[scope_id];
+                        if let Some(s) = scope.symbols.iter().find(|s| s.name == *name) {
+                            break s;
+                        }
+                        match scope.parent {
+                            Some(ScopeId(id)) => scope_id = id as usize,
+                            None => panic!("symbol '{}' not found in scope chain", name),
+                        }
+                    };
+                    let var_type = match &sym.kind {
+                        SymbolKind::Variable { var_type, .. } => var_type,
+                        _ => panic!("expected variable, got {:?}", sym.kind),
+                    };
+                    (sym.id.clone(), IrType::from(var_type))
+                };
+
+                let dest = self.fresh_reg();
+                (
+                    dest,
+                    vec![IrInstruction::LoadStack {
+                        ir_type,
+                        dest,
+                        symbol: sym_id,
+                    }],
+                )
+            }
+
+            Expression::BinaryOperation { op, left, right } => {
+                let (left_reg, left_instrs) = self.emit_expression(left);
+                let (right_reg, right_instrs) = self.emit_expression(right);
+                let dest = self.fresh_reg();
+
+                let mut instrs = left_instrs;
+                instrs.extend(right_instrs);
+                instrs.push(IrInstruction::BinaryOp {
+                    op: op.clone(),
+                    dest,
+                    left: left_reg,
+                    right: right_reg,
+                });
+
+                self.free_reg(left_reg);
+                self.free_reg(right_reg);
+
+                (dest.clone(), instrs)
+            }
+
+            Expression::FunctionCall { name, args, .. } => {
+                let mut instrs = Vec::new();
+
+                for (i, arg) in args.iter().enumerate() {
+                    let (reg, arg_instrs) = self.emit_expression(arg);
+                    instrs.extend(arg_instrs);
+                    instrs.push(IrInstruction::StoreImm {
+                        dest: IrReg::Arg(i),
+                        value: IrValue::Reg(reg),
+                    });
+                }
+
+                instrs.push(IrInstruction::Call {
+                    function_name: name.clone(),
+                });
+
+                let dest = self.fresh_reg();
+                instrs.push(IrInstruction::StoreImm {
+                    dest,
+                    value: IrValue::Reg(IrReg::RetVal),
+                });
+
+                (dest, instrs)
+            }
+        }
+    }
+
+    fn lookup(&self, id: &SymbolId) -> &Symbol {
+        self.program
+            .scope_table
+            .iter()
+            .flat_map(|s| &s.symbols)
+            .find(|s| s.id.0 == id.0)
+            .unwrap()
+    }
+}

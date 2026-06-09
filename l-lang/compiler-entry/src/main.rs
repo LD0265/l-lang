@@ -1,14 +1,12 @@
 use std::{path::Path, process::exit};
 
 use clap::{CommandFactory, Parser, error::ErrorKind};
-use util::error::CompileError;
-
 use crate::{cli::Args, compiler::Compiler};
 
 mod cli;
 mod compiler;
 
-fn main() -> Result<(), CompileError> {
+fn main() {
     let args = Args::parse();
 
     let path = Path::new(args.input_file.as_str());
@@ -46,10 +44,25 @@ fn main() -> Result<(), CompileError> {
 
     let source = std::fs::read_to_string(path).unwrap_or_else(|_| String::from(""));
 
-    let mut compiler = Compiler::new(&source);
+    let compiler = match Compiler::new(&source) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\x1b[1;31m{}", e);
+            std::process::exit(1);
+        },
+    };
 
-    let output = args.output.as_str();
-    compiler.compile(output.to_string())?;
+    let output_path = args.output.as_str();
+    let assembly = compiler.compile();
+
+    let write_res = std::fs::write(output_path, assembly);
+
+    match write_res {
+        Ok(_) => {},
+        Err(e) => {
+            eprintln!("Failed to write to output file: {}", e);
+        }
+    };
 
     if args.tokens {
         match compiler.get_tokens() {
@@ -99,6 +112,4 @@ fn main() -> Result<(), CompileError> {
             }
         }
     }
-
-    Ok(())
 }

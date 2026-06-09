@@ -5,6 +5,7 @@ pub enum ScopeType {
     Global,
 
     FunctionBody {
+        name: String, // for debugging
         parent: SymbolId
     }
 }

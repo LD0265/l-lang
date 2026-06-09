@@ -97,6 +97,7 @@ name = "codegen"
 version = "0.1.0"
 dependencies = [
  "ir",
+ "parser",
  "semantic",
 ]
 
@@ -183,6 +184,7 @@ name = "semantic"
 version = "0.1.0"
 dependencies = [
  "parser",
+ "util",
 ]
 
 [[package]]

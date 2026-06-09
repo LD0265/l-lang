@@ -2,7 +2,7 @@ use lexer::token::Token;
 use util::error::{CompileError, Result};
 
 use crate::{
-    expression::Expression,
+    expression::{BinaryOperator, Expression},
     program::Program,
     statement::{Parameter, Statement},
     types::Type,
@@ -26,29 +26,6 @@ impl Parser {
     pub fn parse(&mut self) -> Result<Program> {
         let mut statements = Vec::new();
 
-        // Maybe check if main exists in scope during semantic pass
-        // then insert thish
-
-        // text_section.scope.body.push(Statement::Label {
-        //     name: "_start".to_string(),
-        //     body: {
-        //         vec![
-        //             Statement::Instruction {
-        //                 opcode: "jal".to_string(),
-        //                 operands: vec!["main".to_string()],
-        //             },
-        //             Statement::Instruction {
-        //                 opcode: "li".to_string(),
-        //                 operands: vec!["$v0, 10".to_string()],
-        //             },
-        //             Statement::Instruction {
-        //                 opcode: "syscall\n".to_string(),
-        //                 operands: vec![],
-        //             },
-        //         ]
-        //     },
-        // });
-
         while !self.is_at_end() {
             statements.push(self.parse_statement()?);
         }
@@ -70,14 +47,36 @@ impl Parser {
 
             Token::Identifier(_) => {
                 let name = self.parse_identifier()?;
-                self.expect(Token::Equal)?;
-                let value = self.parse_expresion()?;
-                self.expect(Token::Semicolon)?;
-                Ok(Statement::Assign {
-                    var_name: name,
-                    value,
-                    line: self.line,
-                })
+
+                if self.peek() == &Token::LeftParen {
+                    self.advance();
+                    let mut args = Vec::new();
+                    if self.peek() != &Token::RightParen {
+                        loop {
+                            args.push(self.parse_expresion()?);
+                            if !matches!(self.peek(), Token::Comma) {
+                                break;
+                            }
+                            self.advance();
+                        }
+                    }
+                    self.expect(Token::RightParen)?;
+                    self.expect(Token::Semicolon)?;
+                    Ok(Statement::FunctionCall {
+                        name,
+                        args,
+                        line: self.line,
+                    })
+                } else {
+                    self.expect(Token::Equal)?;
+                    let value = self.parse_expresion()?;
+                    self.expect(Token::Semicolon)?;
+                    Ok(Statement::Assign {
+                        var_name: name,
+                        value,
+                        line: self.line,
+                    })
+                }
             }
 
             Token::Return => {
@@ -164,6 +163,13 @@ impl Parser {
             self.advance();
         }
 
+        if params.len() > 4 {
+            return Err(CompileError::ParseError {
+                message: String::from("Function has more than 4 params"),
+                line: self.line,
+            });
+        }
+
         Ok(params)
     }
 
@@ -202,37 +208,105 @@ impl Parser {
     }
 
     fn parse_expresion(&mut self) -> Result<Expression> {
-        // Its a single token expression
-        if self.peek_ahead(1) == Some(&Token::Semicolon) {
-            match self.peek() {
-                Token::IntegerLiteral(n) => {
-                    let n = *n;
-                    self.advance();
-                    return Ok(Expression::Integer(n));
-                }
+        self.parse_additive()
+    }
 
-                Token::BoolLiteral(b) => {
-                    let b = *b;
-                    self.advance();
-                    return Ok(Expression::Bool(b));
-                }
+    fn parse_additive(&mut self) -> Result<Expression> {
+        let mut left = self.parse_multiplicative()?;
 
-                Token::Identifier(name) => {
-                    let name = name.clone();
-                    self.advance();
-                    return Ok(Expression::Identifier(name));
-                }
+        while matches!(self.peek(), Token::Plus | Token::Minus) {
+            let op = match self.peek() {
+                Token::Plus => BinaryOperator::Add,
+                Token::Minus => BinaryOperator::Sub,
+                _ => unreachable!(),
+            };
+            self.advance();
+            let right = self.parse_multiplicative()?;
+            left = Expression::BinaryOperation {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
 
-                _ => Err(CompileError::CompilerError {
-                    message: format!("{:?} not implemented in parse_expresion", self.peek()),
-                    line: self.line,
-                }),
+        Ok(left)
+    }
+
+    fn parse_multiplicative(&mut self) -> Result<Expression> {
+        let mut left = self.parse_primary()?;
+
+        while matches!(self.peek(), Token::Star | Token::Slash) {
+            let op = match self.peek() {
+                Token::Star => BinaryOperator::Mul,
+                Token::Slash => BinaryOperator::Div,
+                _ => unreachable!(),
+            };
+            self.advance();
+            let right = self.parse_primary()?;
+            left = Expression::BinaryOperation {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(left)
+    }
+
+    fn parse_primary(&mut self) -> Result<Expression> {
+        match self.peek() {
+            Token::IntegerLiteral(n) => {
+                let n = *n;
+                self.advance();
+                Ok(Expression::Integer(n))
             }
-        } else {
-            Err(CompileError::CompilerError {
-                message: format!("Multi variable expressions not implemented in parse_expresion"),
+
+            Token::BoolLiteral(b) => {
+                let b = *b;
+                self.advance();
+                Ok(Expression::Bool(b))
+            }
+
+            Token::Identifier(name) => {
+                let name = name.clone();
+                self.advance();
+
+                if self.peek() == &Token::LeftParen {
+                    self.advance(); // consume (
+                    let mut args = Vec::new();
+
+                    if self.peek() != &Token::RightParen {
+                        loop {
+                            args.push(self.parse_expresion()?);
+                            if !matches!(self.peek(), Token::Comma) {
+                                break;
+                            }
+                            self.advance(); // consume ,
+                        }
+                    }
+
+                    self.expect(Token::RightParen)?;
+                    Ok(Expression::FunctionCall {
+                        name,
+                        args,
+                        return_type: None,
+                    })
+                } else {
+                    Ok(Expression::Identifier(name))
+                }
+            }
+
+            Token::LeftParen => {
+                self.advance();
+                let expr = self.parse_expresion()?;
+                self.expect(Token::RightParen)?;
+                Ok(expr)
+            }
+
+            _ => Err(CompileError::ParseError {
+                message: format!("{:?} not implemented in parse_primary", self.peek()),
                 line: self.line,
-            })
+            }),
         }
     }
 

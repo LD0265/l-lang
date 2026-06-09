@@ -1,4 +1,6 @@
-use parser::types::Type;
+use std::fmt::Display;
+
+use parser::{expression::BinaryOperator, types::Type};
 use semantic::symbol::SymbolId;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,7 +44,7 @@ impl IrType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 pub enum IrReg {
     Temp(usize),
     Arg(usize),
@@ -51,7 +53,7 @@ pub enum IrReg {
 }
 
 impl IrReg {
-    pub fn prefix(&self) -> String {
+    fn prefix(&self) -> String {
         match self {
             IrReg::Temp(_) => String::from("t"),
             IrReg::Arg(_) => String::from("a"),
@@ -60,13 +62,19 @@ impl IrReg {
         }
     }
 
-    pub fn value(&self) -> usize {
+    fn value(&self) -> usize {
         match self {
             IrReg::Temp(n) => *n,
             IrReg::Arg(n) => *n,
             IrReg::RetVal => 0,
             IrReg::RetAddr => 0,
         }
+    }
+}
+
+impl Display for IrReg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "${}{}", self.prefix(), self.value())
     }
 }
 
@@ -112,8 +120,15 @@ pub enum IrInstruction {
         symbol: SymbolId,
     },
 
-    Call {
+    BinaryOp {
+        op: BinaryOperator,
+        dest: IrReg,
+        left: IrReg,
+        right: IrReg,
+    },
 
+    Call {
+        function_name: String
     },
 
     Ret,
