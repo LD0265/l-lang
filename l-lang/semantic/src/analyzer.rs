@@ -474,8 +474,7 @@ impl Analyzer {
                     });
                     return;
                 };
-
-                // check arg count matches param count
+                
                 let (expected_params, resolved_return) =
                     match &self.scope_table[scope_idx].symbols[sym_idx].kind {
                         SymbolKind::Function {
@@ -493,6 +492,7 @@ impl Analyzer {
                         }
                     };
 
+                // check arg count matches param count
                 if args.len() != expected_params {
                     self.warnings.push(SemanticWarning {
                         warning_type: WarningType::TypeMismatch,
