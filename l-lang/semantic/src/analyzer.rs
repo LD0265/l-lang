@@ -5,7 +5,12 @@ use crate::{
     symbol::{State, Symbol, SymbolId, SymbolKind},
     warning::{SemanticWarning, WarningType},
 };
-use parser::{expression::Expression, program::Program, statement::Statement, types::Type};
+use parser::{
+    expression::{BinaryOperator, Expression, UnaryOperator},
+    program::Program,
+    statement::Statement,
+    types::Type,
+};
 use util::error::CompileError;
 use util::error::Result;
 
@@ -219,15 +224,6 @@ impl Analyzer {
                         param_type: param.param_type,
                         symbol: param_id,
                     });
-
-                    // self.insert_symbol(
-                    //     &param.name,
-                    //     SymbolKind::Variable {
-                    //         var_type: param.param_type.clone(),
-                    //         state: State::Initialized, // params are always initialized
-                    //     },
-                    //     *line,
-                    // );
                 }
 
                 let mut sem_body = Vec::new();
@@ -444,11 +440,61 @@ impl Analyzer {
             Statement::Assembly { body } => Ok(Some(SemanticStatement::SemanticAssembly {
                 body: body.clone(),
             })),
+
             // Had to comment this to make the compiler happy
             // _ => Err(CompileError::CompilerError {
             //     message: format!("{:?} is not implemented in analyze_statement", stmt),
             //     line: 0,
             // }),
+            
+            Statement::If {
+                label,
+                condition,
+                body,
+                else_label,
+                else_body,
+            } => {
+                self.analyze_expression(condition, 0);
+
+                self.enter_scope(ScopeType::IfBody {
+                    parent: SymbolId(self.current_scope_id),
+                });
+
+                let mut sem_body = Vec::new();
+                for s in body {
+                    if let Some(sem) = self.analyze_statement(s)? {
+                        sem_body.push(sem);
+                    }
+                }
+
+                self.exit_scope();
+
+                let sem_else_body = if let Some(else_stmts) = else_body {
+                    self.enter_scope(ScopeType::IfBody {
+                        parent: SymbolId(self.current_scope_id),
+                    });
+
+                    let mut else_sem = Vec::new();
+                    for s in else_stmts {
+                        if let Some(sem) = self.analyze_statement(s)? {
+                            else_sem.push(sem);
+                        }
+                    }
+
+                    self.exit_scope();
+                    Some(else_sem)
+                } else {
+                    None
+                };
+
+                Ok(Some(SemanticStatement::SemanticIf {
+                    label: label.clone(),
+                    condition: condition.clone(),
+                    body: sem_body,
+                    else_label: else_label.clone(),
+                    else_body: sem_else_body,
+                }))
+            }
         }
     }
 
@@ -539,34 +585,101 @@ impl Analyzer {
                 *return_type = Some(resolved_return);
             }
 
-            Expression::BinaryOperation { op: _, left, right } => {
+            Expression::BinaryOperation { op, left, right } => {
                 self.analyze_expression(left, line);
                 self.analyze_expression(right, line);
 
                 let left_type = self.resolve_type(left);
                 let right_type = self.resolve_type(right);
 
-                // bool is not valid in arithmetic
-                if matches!(left_type, Some(Type::Bool)) || matches!(right_type, Some(Type::Bool)) {
-                    self.warnings.push(SemanticWarning {
-                        warning_type: WarningType::TypeMismatch,
-                        name: "bool cannot be used in arithmetic expression".to_string(),
-                        message: WarningType::TypeMismatch.get_message(
-                            "bool cannot be used in arithmetic expression".to_string(),
-                        ),
-                        line,
-                    });
-                }
+                let is_comparison = matches!(
+                    op,
+                    BinaryOperator::Eq
+                        | BinaryOperator::NotEq
+                        | BinaryOperator::Lt
+                        | BinaryOperator::Gt
+                        | BinaryOperator::LtEq
+                        | BinaryOperator::GtEq
+                );
+                let is_logical = matches!(op, BinaryOperator::And | BinaryOperator::Or);
+                let is_arithmetic = matches!(
+                    op,
+                    BinaryOperator::Add
+                        | BinaryOperator::Sub
+                        | BinaryOperator::Mul
+                        | BinaryOperator::Div
+                );
 
-                // warn if types differ
-                if let (Some(lt), Some(rt)) = (left_type, right_type) {
-                    if lt != rt {
+                if is_logical {
+                    // both operands must be bool
+                    if !matches!(left_type, Some(Type::Bool))
+                        || !matches!(right_type, Some(Type::Bool))
+                    {
                         self.warnings.push(SemanticWarning {
                             warning_type: WarningType::TypeMismatch,
-                            name: format!("type mismatch in expression: {:?} and {:?}", lt, rt),
-                            message: format!("type mismatch in expression: {:?} and {:?}", lt, rt),
+                            name: "logical operators require bool operands".to_string(),
+                            message: "logical operators require bool operands".to_string(),
                             line,
                         });
+                    }
+                } else if is_arithmetic {
+                    // bool not valid in arithmetic
+                    if matches!(left_type, Some(Type::Bool))
+                        || matches!(right_type, Some(Type::Bool))
+                    {
+                        self.warnings.push(SemanticWarning {
+                            warning_type: WarningType::TypeMismatch,
+                            name: "bool cannot be used in arithmetic expression".to_string(),
+                            message: WarningType::TypeMismatch.get_message(
+                                "bool cannot be used in arithmetic expression".to_string(),
+                            ),
+                            line,
+                        });
+                    }
+                    // warn if types differ
+                    if let (Some(lt), Some(rt)) = (left_type, right_type) {
+                        if lt != rt {
+                            self.warnings.push(SemanticWarning {
+                                warning_type: WarningType::TypeMismatch,
+                                name: format!("type mismatch in expression: {:?} and {:?}", lt, rt),
+                                message: format!(
+                                    "type mismatch in expression: {:?} and {:?}",
+                                    lt, rt
+                                ),
+                                line,
+                            });
+                        }
+                    }
+                }
+                // comparisons just need matching types, which the type differ check covers
+                if is_comparison {
+                    if let (Some(lt), Some(rt)) = (left_type, right_type) {
+                        if lt != rt {
+                            self.warnings.push(SemanticWarning {
+                                warning_type: WarningType::TypeMismatch,
+                                message: format!("cannot compare {:?} and {:?}", lt, rt),
+                                name: format!("cannot compare {:?} and {:?}", lt, rt),
+                                line,
+                            });
+                        }
+                    }
+                }
+            }
+
+            Expression::UnaryOperation { op, operand } => {
+                self.analyze_expression(operand, line);
+
+                let operand_type = self.resolve_type(operand);
+                match op {
+                    UnaryOperator::Not => {
+                        if !matches!(operand_type, Some(Type::Bool)) {
+                            self.warnings.push(SemanticWarning {
+                                warning_type: WarningType::TypeMismatch,
+                                name: "not operator requires bool operand".to_string(),
+                                message: "not operator requires bool operand".to_string(),
+                                line,
+                            });
+                        }
                     }
                 }
             }
@@ -589,9 +702,27 @@ impl Analyzer {
                 }
             }
 
-            Expression::BinaryOperation { left, right: _, .. } => {
-                // result type is the left operand's type (after any implicit promotion)
-                self.resolve_type(left)
+            Expression::UnaryOperation { op, .. } => match op {
+                UnaryOperator::Not => Some(Type::Bool),
+            },
+
+            Expression::BinaryOperation { op, left, .. } => {
+                let is_comparison = matches!(
+                    op,
+                    BinaryOperator::Eq
+                        | BinaryOperator::NotEq
+                        | BinaryOperator::Lt
+                        | BinaryOperator::Gt
+                        | BinaryOperator::LtEq
+                        | BinaryOperator::GtEq
+                );
+                let is_logical = matches!(op, BinaryOperator::And | BinaryOperator::Or);
+
+                if is_comparison || is_logical {
+                    Some(Type::Bool) // these always produce bool
+                } else {
+                    self.resolve_type(left) // arithmetic takes left operand type
+                }
             }
 
             Expression::FunctionCall { return_type, .. } => return_type.clone(),

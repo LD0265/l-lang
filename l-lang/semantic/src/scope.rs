@@ -7,6 +7,10 @@ pub enum ScopeType {
     FunctionBody {
         name: String, // for debugging
         parent: SymbolId
+    },
+
+    IfBody {
+        parent: SymbolId,
     }
 }
 

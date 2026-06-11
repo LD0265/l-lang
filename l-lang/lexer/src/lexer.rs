@@ -88,7 +88,12 @@ impl Lexer {
                 Ok(Token::Slash)
             }
 
+            '<' => self.scan_less_than(),
+            '>' => self.scan_greater_than(),
             '=' => self.scan_equal(),
+            '!' => self.scan_not(),
+            '&' => self.scan_and(),
+            '|' => self.scan_or(),
 
             '0'..='9' => self.scan_number(false),
             'a'..='z' | 'A'..='Z' | '_' => self.scan_identifier(),
@@ -223,11 +228,86 @@ impl Lexer {
         let ch = self.peek();
 
         match ch {
-            // '=' => {
-            //     self.advance();
-            //     Ok(Token::EqualEqual)
-            // }
+            '=' => {
+                self.advance();
+                Ok(Token::EqualEqual)
+            }
             _ => Ok(Token::Equal),
+        }
+    }
+
+    fn scan_less_than(&mut self) -> Result<Token> {
+        self.advance();
+
+        let ch = self.peek();
+
+        match ch {
+            '=' => {
+                self.advance();
+                Ok(Token::LessEqual)
+            }
+
+            _ => Ok(Token::LessThan),
+        }
+    }
+
+    fn scan_greater_than(&mut self) -> Result<Token> {
+        self.advance();
+
+        let ch = self.peek();
+
+        match ch {
+            '=' => {
+                self.advance();
+                Ok(Token::GreaterEqual)
+            }
+
+            _ => Ok(Token::GreaterThan),
+        }
+    }
+
+    fn scan_not(&mut self) -> Result<Token> {
+        self.advance();
+
+        let ch = self.peek();
+
+        match ch {
+            '=' => {
+                self.advance();
+                Ok(Token::NotEqual)
+            }
+
+            _ => Ok(Token::Not),
+        }
+    }
+
+    fn scan_and(&mut self) -> Result<Token> {
+        self.advance();
+
+        let ch = self.peek();
+
+        match ch {
+            '&' => {
+                self.advance();
+                Ok(Token::AndAnd)
+            }
+
+            _ => Ok(Token::And),
+        }
+    }
+
+    fn scan_or(&mut self) -> Result<Token> {
+        self.advance();
+
+        let ch = self.peek();
+
+        match ch {
+            '|' => {
+                self.advance();
+                Ok(Token::OrOr)
+            }
+
+            _ => Ok(Token::Or),
         }
     }
 

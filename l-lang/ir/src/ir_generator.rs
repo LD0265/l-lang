@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use parser::expression::Expression;
+use parser::expression::{Expression, UnaryOperator};
 use semantic::{
     program::SemanticProgram,
     scope::ScopeId,
@@ -9,7 +9,7 @@ use semantic::{
 };
 
 use crate::{
-    instruction::{IrFunction, IrInstruction, IrReg, IrType, IrValue},
+    instruction::{BranchType, IrFunction, IrInstruction, IrReg, IrType, IrValue},
     program::IrProgram,
 };
 
@@ -18,6 +18,7 @@ pub struct IrGenerator {
     reg_counter: usize,
     free_regs: Vec<usize>,
     current_scope_id: usize,
+    spill_counter: usize,
 }
 
 impl IrGenerator {
@@ -27,6 +28,7 @@ impl IrGenerator {
             reg_counter: 0,
             free_regs: Vec::new(),
             current_scope_id: 0,
+            spill_counter: 0,
         }
     }
 
@@ -59,6 +61,7 @@ impl IrGenerator {
                     .unwrap_or(0);
 
                 self.reg_counter = 0;
+                self.spill_counter = 0;
 
                 let name = self.lookup(symbol).name.clone();
                 let ir_return_type = IrType::from(return_type);
@@ -111,6 +114,7 @@ impl IrGenerator {
 
     fn collect_called_functions(&self, body: &[SemanticStatement]) -> HashSet<String> {
         let mut called = HashSet::new();
+
         for stmt in body {
             match stmt {
                 SemanticStatement::SemanticFunctionCall { name, .. } => {
@@ -132,9 +136,24 @@ impl IrGenerator {
                         self.collect_called_in_expr(expr, &mut called);
                     }
                 }
+                SemanticStatement::SemanticIf {
+                    condition,
+                    body,
+                    else_body,
+                    ..
+                } => {
+                    self.collect_called_in_expr(condition, &mut called);
+
+                    called.extend(self.collect_called_functions(body));
+
+                    if let Some(else_b) = else_body {
+                        called.extend(self.collect_called_functions(else_b));
+                    }
+                }
                 _ => {}
             }
         }
+
         called
     }
 
@@ -151,6 +170,17 @@ impl IrGenerator {
                 self.collect_called_in_expr(right, called);
             }
             _ => {}
+        }
+    }
+
+    fn contains_call(expr: &Expression) -> bool {
+        match expr {
+            Expression::FunctionCall { .. } => true,
+            Expression::BinaryOperation { left, right, .. } => {
+                Self::contains_call(left) || Self::contains_call(right)
+            }
+            Expression::UnaryOperation { operand, .. } => Self::contains_call(operand),
+            _ => false,
         }
     }
 
@@ -186,6 +216,7 @@ impl IrGenerator {
         allocs: &mut Vec<IrInstruction>,
         rest: &mut Vec<IrInstruction>,
     ) {
+        self.free_regs.clear();
         match stmt {
             SemanticStatement::SemanticVarDecl {
                 symbol,
@@ -237,6 +268,67 @@ impl IrGenerator {
                         src: reg,
                     });
                 }
+            }
+
+            SemanticStatement::SemanticIf {
+                label,
+                condition,
+                body,
+                else_label,
+                else_body,
+            } => {
+                let (reg, instrs) = self.emit_expression(condition);
+                rest.extend(instrs);
+
+                if else_label.is_some() {
+                    rest.push(IrInstruction::Branch {
+                        reg,
+                        label: else_label.clone().unwrap(), // unwrap is ok cuz else_label is some
+                        branch_type: BranchType::EqZero,
+                    });
+                } else {
+                    rest.push(IrInstruction::Branch {
+                        reg,
+                        label: label.clone(), // unwrap is ok cuz else_label is some
+                        branch_type: BranchType::EqZero,
+                    });
+                }
+
+                for stmt in body {
+                    self.emit_statement(stmt, allocs, rest);
+                }
+
+                let body_returns =
+                    matches!(body.last(), Some(SemanticStatement::SemanticReturn { .. }));
+                if !body_returns {
+                    rest.push(IrInstruction::Jump {
+                        label: label.clone(),
+                    });
+                }
+
+                if else_label.is_some() {
+                    rest.push(IrInstruction::Label {
+                        label_name: else_label.clone().unwrap(),
+                    });
+
+                    for stmt in else_body.clone().unwrap() {
+                        self.emit_statement(&stmt, allocs, rest);
+                    }
+
+                    let body_returns = matches!(
+                        else_body.as_ref().and_then(|v| v.last()),
+                        Some(SemanticStatement::SemanticReturn { .. })
+                    );
+                    if !body_returns {
+                        rest.push(IrInstruction::Jump {
+                            label: label.clone(),
+                        });
+                    }
+                }
+
+                rest.push(IrInstruction::Label {
+                    label_name: label.clone(),
+                });
             }
 
             SemanticStatement::SemanticReturn { value } => {
@@ -319,24 +411,66 @@ impl IrGenerator {
                 )
             }
 
+            Expression::UnaryOperation { op, operand } => {
+                let (operand_reg, operand_instrs) = self.emit_expression(operand);
+                let dest = self.fresh_reg();
+                let mut instrs = operand_instrs;
+
+                match op {
+                    UnaryOperator::Not => {
+                        instrs.push(IrInstruction::UnaryOp {
+                            op: UnaryOperator::Not,
+                            dest,
+                            operand: operand_reg,
+                        });
+                    }
+                }
+
+                (dest, instrs)
+            }
+
             Expression::BinaryOperation { op, left, right } => {
                 let (left_reg, left_instrs) = self.emit_expression(left);
+
+                // if right side contains a call, left_reg will be clobbered by jal
+                // so spill it to the stack before evaluating right
+                let (spill_instrs, reload_instrs, left_reg_final) = if Self::contains_call(right) {
+                    let slot = self.spill_counter;
+                    self.spill_counter += 1;
+                    let reloaded = self.fresh_reg();
+                    (
+                        vec![IrInstruction::SpillTemp {
+                            slot,
+                            src: left_reg,
+                        }],
+                        vec![IrInstruction::LoadTemp {
+                            slot,
+                            dest: reloaded,
+                        }],
+                        reloaded,
+                    )
+                } else {
+                    (vec![], vec![], left_reg)
+                };
+
                 let (right_reg, right_instrs) = self.emit_expression(right);
                 let dest = self.fresh_reg();
 
                 let mut instrs = left_instrs;
+                instrs.extend(spill_instrs);
                 instrs.extend(right_instrs);
+                instrs.extend(reload_instrs);
                 instrs.push(IrInstruction::BinaryOp {
                     op: op.clone(),
                     dest,
-                    left: left_reg,
+                    left: left_reg_final,
                     right: right_reg,
                 });
 
                 self.free_reg(left_reg);
                 self.free_reg(right_reg);
 
-                (dest.clone(), instrs)
+                (dest, instrs)
             }
 
             Expression::FunctionCall { name, args, .. } => {

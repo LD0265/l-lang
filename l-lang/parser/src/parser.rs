@@ -2,7 +2,7 @@ use lexer::token::Token;
 use util::error::{CompileError, Result};
 
 use crate::{
-    expression::{BinaryOperator, Expression},
+    expression::{BinaryOperator, Expression, UnaryOperator},
     program::Program,
     statement::{Parameter, Statement},
     types::Type,
@@ -12,6 +12,7 @@ pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
     line: usize,
+    label_count: usize,
 }
 
 impl Parser {
@@ -20,6 +21,7 @@ impl Parser {
             tokens,
             current: 0,
             line: 1,
+            label_count: 0,
         }
     }
 
@@ -45,11 +47,7 @@ impl Parser {
                 }
             }
 
-            Token::AsmBlock(code) => {
-                let body = code.clone();
-                self.advance();
-                Ok(Statement::Assembly { body })
-            }
+            Token::If => self.parse_if(),
 
             Token::Identifier(_) => {
                 let name = self.parse_identifier()?;
@@ -83,6 +81,12 @@ impl Parser {
                         line: self.line,
                     })
                 }
+            }
+
+            Token::AsmBlock(code) => {
+                let body = code.clone();
+                self.advance();
+                Ok(Statement::Assembly { body })
             }
 
             Token::Return => {
@@ -213,8 +217,95 @@ impl Parser {
         })
     }
 
+    fn parse_if(&mut self) -> Result<Statement> {
+        self.advance();
+
+        self.expect(Token::LeftParen)?;
+        let condition = self.parse_expresion()?;
+        self.expect(Token::RightParen)?;
+
+        self.expect(Token::LeftBrace)?;
+        let body = self.parse_block()?;
+        self.expect(Token::RightBrace)?;
+
+        let mut else_label = None;
+        let mut else_body = None;
+        let label_num = self.label_count;
+
+        if self.peek() == &Token::Else {
+            self.advance();
+            self.expect(Token::LeftBrace)?;
+            else_body = Some(self.parse_block()?);
+            self.expect(Token::RightBrace)?;
+            else_label = Some(format!("else_{}", label_num));
+        }
+
+        self.label_count += 1;
+        Ok(Statement::If {
+            label: format!("if_{}", label_num),
+            condition,
+            body,
+            else_label,
+            else_body,
+        })
+    }
+
     fn parse_expresion(&mut self) -> Result<Expression> {
-        self.parse_additive()
+        self.parse_logical()
+    }
+
+    fn parse_logical(&mut self) -> Result<Expression> {
+        let mut left = self.parse_comparison()?;
+
+        while matches!(self.peek(), Token::AndAnd | Token::OrOr) {
+            let op = match self.peek() {
+                Token::AndAnd => BinaryOperator::And,
+                Token::OrOr => BinaryOperator::Or,
+                _ => unreachable!(),
+            };
+            self.advance();
+            let right = self.parse_comparison()?;
+            left = Expression::BinaryOperation {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(left)
+    }
+
+    fn parse_comparison(&mut self) -> Result<Expression> {
+        let mut left = self.parse_additive()?;
+
+        while matches!(
+            self.peek(),
+            Token::EqualEqual
+                | Token::NotEqual
+                | Token::LessThan
+                | Token::GreaterThan
+                | Token::LessEqual
+                | Token::GreaterEqual
+        ) {
+            let op = match self.peek() {
+                Token::EqualEqual => BinaryOperator::Eq,
+                Token::NotEqual => BinaryOperator::NotEq,
+                Token::LessThan => BinaryOperator::Lt,
+                Token::GreaterThan => BinaryOperator::Gt,
+                Token::LessEqual => BinaryOperator::LtEq,
+                Token::GreaterEqual => BinaryOperator::GtEq,
+                _ => unreachable!(),
+            };
+            self.advance();
+            let right = self.parse_additive()?;
+            left = Expression::BinaryOperation {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(left)
     }
 
     fn parse_additive(&mut self) -> Result<Expression> {
@@ -239,7 +330,7 @@ impl Parser {
     }
 
     fn parse_multiplicative(&mut self) -> Result<Expression> {
-        let mut left = self.parse_primary()?;
+        let mut left = self.parse_unary()?;
 
         while matches!(self.peek(), Token::Star | Token::Slash) {
             let op = match self.peek() {
@@ -257,6 +348,18 @@ impl Parser {
         }
 
         Ok(left)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expression> {
+        if matches!(self.peek(), Token::Not) {
+            self.advance();
+            let operand = self.parse_unary()?;
+            return Ok(Expression::UnaryOperation {
+                op: UnaryOperator::Not,
+                operand: Box::new(operand),
+            });
+        }
+        self.parse_primary()
     }
 
     fn parse_primary(&mut self) -> Result<Expression> {

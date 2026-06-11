@@ -37,6 +37,14 @@ pub enum SemanticStatement {
         value: Expression,
     },
 
+    SemanticIf {
+        label: String,
+        condition: Expression,
+        body: Vec<SemanticStatement>,
+        else_label: Option<String>,
+        else_body: Option<Vec<SemanticStatement>>,
+    },
+
     SemanticAssembly {
         body: Vec<String>,
     },

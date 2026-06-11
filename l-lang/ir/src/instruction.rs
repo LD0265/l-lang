@@ -1,6 +1,9 @@
 use std::fmt::Display;
 
-use parser::{expression::BinaryOperator, types::Type};
+use parser::{
+    expression::{BinaryOperator, UnaryOperator},
+    types::Type,
+};
 use semantic::symbol::SymbolId;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,8 +98,17 @@ impl IrValue {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum BranchType {
+    EqZero,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum IrInstruction {
     SaveRa,
+
+    Label {
+        label_name: String,
+    },
 
     Alloc {
         ir_type: IrType,
@@ -120,6 +132,16 @@ pub enum IrInstruction {
         symbol: SymbolId,
     },
 
+    SpillTemp {
+        slot: usize,
+        src: IrReg,
+    },
+
+    LoadTemp {
+        slot: usize,
+        dest: IrReg,
+    },
+
     BinaryOp {
         op: BinaryOperator,
         dest: IrReg,
@@ -127,8 +149,24 @@ pub enum IrInstruction {
         right: IrReg,
     },
 
+    UnaryOp {
+        op: UnaryOperator,
+        dest: IrReg,
+        operand: IrReg,
+    },
+
+    Jump {
+        label: String,
+    },
+
+    Branch {
+        reg: IrReg,
+        label: String,
+        branch_type: BranchType,
+    },
+
     Call {
-        function_name: String
+        function_name: String,
     },
 
     Assembly {

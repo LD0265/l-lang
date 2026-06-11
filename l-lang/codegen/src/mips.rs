@@ -1,9 +1,9 @@
 use crate::allocator::Allocator;
 use ir::{
-    instruction::{IrFunction, IrInstruction, IrReg, IrType, IrValue},
+    instruction::{BranchType, IrFunction, IrInstruction, IrReg, IrType, IrValue},
     program::IrProgram,
 };
-use parser::expression::BinaryOperator;
+use parser::expression::{BinaryOperator, UnaryOperator};
 use semantic::symbol::SymbolId;
 
 pub struct Mips {
@@ -52,6 +52,12 @@ impl Mips {
         let mut allocator = Allocator::new();
         self.init_stack(allocs, &mut allocator);
 
+        for instr in &rest {
+            if let IrInstruction::SpillTemp { slot, .. } = instr {
+                allocator.get_or_insert_spill(*slot);
+            }
+        }
+
         self.emit_label(&name);
 
         let stack_size = allocator.get_stack_size();
@@ -73,26 +79,62 @@ impl Mips {
             IrInstruction::SaveRa => return,
             IrInstruction::Alloc { .. } => return,
             IrInstruction::StoreImm { dest, value } => self.generate_store_imm(dest, value),
+
             IrInstruction::StoreStack {
                 ir_type,
                 symbol,
                 src,
             } => self.generate_store_stack(ir_type, symbol, src, allocator),
+
             IrInstruction::LoadStack {
                 ir_type,
                 dest,
                 symbol,
             } => self.generate_load_stack(ir_type, dest, symbol, allocator),
+
             IrInstruction::Call { function_name } => {
                 self.emit_instruction("jal", &function_name);
             }
+
+            IrInstruction::Label { label_name } => self.emit_label(&label_name),
+            IrInstruction::Jump { label } => self.emit_instruction("j", &label),
+
+            IrInstruction::Branch {
+                reg,
+                label,
+                branch_type,
+            } => {
+                let instr = match branch_type {
+                    BranchType::EqZero => "beqz",
+                };
+                self.emit_instruction(instr, &format!("{}, {}", reg, label));
+            }
+
+            IrInstruction::SpillTemp { slot, src } => {
+                let offset = allocator.get_or_insert_spill(slot);
+                self.emit_instruction("sw", &format!("{}, {}($sp)", src, offset));
+            }
+
+            IrInstruction::LoadTemp { slot, dest } => {
+                let offset = allocator.get_or_insert_spill(slot);
+                self.emit_instruction("lw", &format!("{}, {}($sp)", dest, offset));
+            }
+
             IrInstruction::Ret => self.generate_return(allocator),
+
             IrInstruction::BinaryOp {
                 op,
                 dest,
                 left,
                 right,
             } => self.generate_binary_op(op, dest, left, right),
+
+            IrInstruction::UnaryOp { op, dest, operand } => match op {
+                UnaryOperator::Not => {
+                    self.emit_instruction("seq", &format!("{}, {}, $zero", dest, operand));
+                }
+            },
+
             IrInstruction::Assembly { line } => self.emit_instruction(&line, ""),
         }
     }
@@ -137,6 +179,14 @@ impl Mips {
             BinaryOperator::Sub => "sub",
             BinaryOperator::Mul => "mul",
             BinaryOperator::Div => "div",
+            BinaryOperator::Eq => "seq",
+            BinaryOperator::NotEq => "sne",
+            BinaryOperator::Lt => "slt",
+            BinaryOperator::Gt => "sgt",
+            BinaryOperator::LtEq => "sle",
+            BinaryOperator::GtEq => "sge",
+            BinaryOperator::And => "and",
+            BinaryOperator::Or => "or",
         };
 
         if instr == "div" {

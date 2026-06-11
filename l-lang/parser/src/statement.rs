@@ -35,6 +35,14 @@ pub enum Statement {
         line: usize,
     },
 
+    If {
+        label: String,
+        condition: Expression,
+        body: Vec<Statement>,
+        else_label: Option<String>,
+        else_body: Option<Vec<Statement>>,
+    },
+
     Assembly {
         body: Vec<String>,
     },
