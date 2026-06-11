@@ -1,18 +1,13 @@
 use crate::{expression::Expression, types::Type};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
     pub name: String,
     pub param_type: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
-    Label {
-        name: String,
-        body: Vec<Statement>,
-    },
-
     FunctionDecleration {
         return_type: Type,
         name: String,
@@ -38,6 +33,10 @@ pub enum Statement {
         var_name: String,
         value: Expression,
         line: usize,
+    },
+
+    Assembly {
+        body: Vec<String>,
     },
 
     Return {

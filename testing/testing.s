@@ -6,34 +6,34 @@ _start:
         li      $v0, 10
         syscall
 
-plus1:
+read_i32:
+        li      $v0, 5
+        syscall
+        jr      $ra
+
+println_i32:
         addiu   $sp, $sp, -8
         sw      $a0, 0($sp)
-        lw      $t0, 0($sp)
-        li      $t1, 1
-        add     $t2, $t0, $t1
-        move    $v0, $t2
+        li      $v0, 1
+        syscall
+        li      $a0, 10
+        li      $v0, 11
+        syscall
         addiu   $sp, $sp, 8
         jr      $ra
 
 main:
-        addiu   $sp, $sp, -16
-        sw      $ra, 12($sp)
-        li      $t1, 41
-        sw      $t1, 0($sp)
-        lw      $t0, 0($sp)
-        move    $a0, $t0
-        jal     plus1
+        addiu   $sp, $sp, -8
+        sw      $ra, 4($sp)
+        jal     read_i32
         move    $t0, $v0
-        sw      $t0, 4($sp)
-        li      $t1, 1
-        move    $a0, $t1
-        jal     plus1
-        move    $t2, $v0
-        li      $t3, 2
-        add     $t4, $t2, $t3
-        sh      $t4, 8($sp)
-        lw      $ra, 12($sp)
-        addiu   $sp, $sp, 16
+        sw      $t0, 0($sp)
+        lw      $t1, 0($sp)
+        li      $t2, 1
+        add     $t3, $t1, $t2
+        move    $a0, $t3
+        jal     println_i32
+        lw      $ra, 4($sp)
+        addiu   $sp, $sp, 8
         jr      $ra
 

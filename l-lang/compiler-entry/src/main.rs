@@ -1,7 +1,7 @@
-use std::{path::Path, process::exit};
+use std::path::Path;
 
-use clap::{CommandFactory, Parser, error::ErrorKind};
 use crate::{cli::Args, compiler::Compiler};
+use clap::{CommandFactory, Parser, error::ErrorKind};
 
 mod cli;
 mod compiler;
@@ -44,12 +44,12 @@ fn main() {
 
     let source = std::fs::read_to_string(path).unwrap_or_else(|_| String::from(""));
 
-    let compiler = match Compiler::new(&source) {
+    let compiler = match Compiler::new(&source, args.tokens, args.ast, args.sat, args.ir) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("\x1b[1;31m{}", e);
             std::process::exit(1);
-        },
+        }
     };
 
     let output_path = args.output.as_str();
@@ -58,58 +58,9 @@ fn main() {
     let write_res = std::fs::write(output_path, assembly);
 
     match write_res {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => {
             eprintln!("Failed to write to output file: {}", e);
         }
     };
-
-    if args.tokens {
-        match compiler.get_tokens() {
-            Ok(tokens) => {
-                println!("{:#?}", tokens);
-            }
-
-            Err(e) => {
-                eprintln!("{}", e);
-                exit(1);
-            }
-        }
-    }
-
-    if args.ast {
-        match compiler.get_ast() {
-            Ok(ast) => {
-                println!("{:#?}", ast);
-            }
-
-            Err(e) => {
-                eprintln!("{}", e);
-            }
-        }
-    }
-
-    if args.sat {
-        match compiler.get_sat() {
-            Ok(ast) => {
-                println!("{:#?}", ast);
-            }
-
-            Err(e) => {
-                eprintln!("{}", e);
-            }
-        }
-    }
-
-    if args.ir {
-        match compiler.get_ir() {
-            Ok(ast) => {
-                println!("{:#?}", ast);
-            }
-
-            Err(e) => {
-                eprintln!("{}", e);
-            }
-        }
-    }
 }

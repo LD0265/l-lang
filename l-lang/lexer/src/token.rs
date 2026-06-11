@@ -8,9 +8,11 @@ pub enum Token {
     If,
     While,
     Return,
+    ASMKeyword,
 
     IntegerLiteral(i32),
     BoolLiteral(bool),
+    AsmBlock(Vec<String>),
 
     Identifier(String),
 
@@ -44,6 +46,7 @@ impl Token {
             "return" => Some(Token::Return),
             "true" => Some(Token::BoolLiteral(true)),
             "false" => Some(Token::BoolLiteral(false)),
+            "__asm__" => Some(Token::ASMKeyword),
             _ => None,
         }
     }

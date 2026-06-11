@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use parser::expression::Expression;
 use semantic::{
     program::SemanticProgram,
@@ -30,6 +32,7 @@ impl IrGenerator {
 
     pub fn generate(&mut self) -> IrProgram {
         let mut functions = Vec::new();
+        let called = self.collect_called_functions(&self.program.body);
 
         for stmt in &self.program.body.clone() {
             if let SemanticStatement::SemanticFunction {
@@ -37,9 +40,14 @@ impl IrGenerator {
                 return_type,
                 body,
                 params,
+                name,
                 ..
             } = stmt
             {
+                if name != "main" && !called.contains(name) {
+                    continue; // skip unused functions
+                }
+
                 self.current_scope_id = self
                     .program
                     .scope_table
@@ -67,6 +75,7 @@ impl IrGenerator {
                 let needs_ra = rest.iter().any(|i| matches!(i, IrInstruction::Call { .. }));
 
                 let mut instructions = allocs;
+
                 if needs_ra {
                     instructions.push(IrInstruction::SaveRa);
                 }
@@ -97,6 +106,51 @@ impl IrGenerator {
     fn free_reg(&mut self, reg: IrReg) {
         if let IrReg::Temp(n) = reg {
             self.free_regs.push(n);
+        }
+    }
+
+    fn collect_called_functions(&self, body: &[SemanticStatement]) -> HashSet<String> {
+        let mut called = HashSet::new();
+        for stmt in body {
+            match stmt {
+                SemanticStatement::SemanticFunctionCall { name, .. } => {
+                    called.insert(name.clone());
+                }
+                SemanticStatement::SemanticFunction { body, .. } => {
+                    called.extend(self.collect_called_functions(body));
+                }
+                SemanticStatement::SemanticVarDecl { initializer, .. } => {
+                    if let Some(expr) = initializer {
+                        self.collect_called_in_expr(expr, &mut called);
+                    }
+                }
+                SemanticStatement::SemanticAssign { value, .. } => {
+                    self.collect_called_in_expr(value, &mut called);
+                }
+                SemanticStatement::SemanticReturn { value, .. } => {
+                    if let Some(expr) = value {
+                        self.collect_called_in_expr(expr, &mut called);
+                    }
+                }
+                _ => {}
+            }
+        }
+        called
+    }
+
+    fn collect_called_in_expr(&self, expr: &Expression, called: &mut HashSet<String>) {
+        match expr {
+            Expression::FunctionCall { name, args, .. } => {
+                called.insert(name.clone());
+                for arg in args {
+                    self.collect_called_in_expr(arg, called);
+                }
+            }
+            Expression::BinaryOperation { left, right, .. } => {
+                self.collect_called_in_expr(left, called);
+                self.collect_called_in_expr(right, called);
+            }
+            _ => {}
         }
     }
 
@@ -195,6 +249,12 @@ impl IrGenerator {
                     });
                 }
                 rest.push(IrInstruction::Ret);
+            }
+
+            SemanticStatement::SemanticAssembly { body } => {
+                for s in body {
+                    rest.push(IrInstruction::Assembly { line: s.clone() });
+                }
             }
 
             SemanticStatement::SemanticFunction { .. } => {

@@ -1,5 +1,5 @@
-use util::error::{Result, CompileError};
 use crate::token::Token;
+use util::error::{CompileError, Result};
 
 pub struct Lexer {
     source: Vec<char>,
@@ -115,9 +115,66 @@ impl Lexer {
 
         let text: String = self.source[start..self.current].iter().collect();
 
-        let token = Token::keyword(&text).unwrap_or(Token::Identifier(text));
+        if text == "__asm__" {
+            return self.scan_asm_block();
+        }
 
+        let token = Token::keyword(&text).unwrap_or(Token::Identifier(text));
         Ok(token)
+    }
+
+    fn scan_asm_block(&mut self) -> Result<Token> {
+        while !self.is_at_end()
+            && (self.peek() == ' '
+                || self.peek() == '\t'
+                || self.peek() == '\n'
+                || self.peek() == '\r')
+        {
+            if self.peek() == '\n' {
+                self.line += 1;
+            }
+            self.advance();
+        }
+
+        if self.peek() != '{' {
+            return Err(CompileError::LexError {
+                message: String::from("expected '{' after __asm__"),
+                line: self.line,
+            });
+        }
+        self.advance();
+
+        let mut lines: Vec<String> = Vec::new();
+        let mut current_line = String::new();
+
+        while !self.is_at_end() {
+            let ch = self.peek();
+
+            if ch == '}' {
+                self.advance();
+                if !current_line.trim().is_empty() {
+                    lines.push(current_line.trim().to_string());
+                }
+                return Ok(Token::AsmBlock(lines));
+            }
+
+            if ch == '\n' {
+                self.line += 1;
+                if !current_line.trim().is_empty() {
+                    lines.push(current_line.trim().to_string());
+                }
+                current_line = String::new();
+            } else {
+                current_line.push(ch);
+            }
+
+            self.advance();
+        }
+
+        Err(CompileError::LexError {
+            message: String::from("unterminated __asm__ block"),
+            line: self.line,
+        })
     }
 
     fn scan_number(&mut self, is_negative: bool) -> Result<Token> {
@@ -170,7 +227,6 @@ impl Lexer {
             //     self.advance();
             //     Ok(Token::EqualEqual)
             // }
-
             _ => Ok(Token::Equal),
         }
     }
@@ -187,7 +243,7 @@ impl Lexer {
                     tokens.push(Token::Newline);
                     self.advance();
                 }
-                
+
                 _ => break,
             }
         }

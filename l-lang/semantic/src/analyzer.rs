@@ -31,7 +31,7 @@ impl Analyzer {
     }
 
     pub fn analyze(&mut self) -> Result<SemanticProgram> {
-        self.init_scope_table();
+        self.init_scope_table()?;
 
         let mut top_level = self.statements.body.clone();
         for stmt in &mut top_level {
@@ -47,26 +47,43 @@ impl Analyzer {
         })
     }
 
-    fn init_scope_table(&mut self) {
+    fn init_scope_table(&mut self) -> Result<()> {
         let global_functions = self.collect_global_functions();
+        let funcs = match global_functions {
+            Ok(vec) => vec,
+            Err(e) => return Err(e),
+        };
+
         self.scope_table.push(Scope {
             scope_id: ScopeId(0),
             kind: ScopeType::Global,
             parent: None,
-            symbols: global_functions,
+            symbols: funcs,
         });
+
+        Ok(())
     }
 
-    fn collect_global_functions(&mut self) -> Vec<Symbol> {
+    fn collect_global_functions(&mut self) -> Result<Vec<Symbol>> {
         let mut functions = Vec::new();
         for stmt in &self.statements.body.clone() {
             if let Statement::FunctionDecleration {
                 return_type,
                 name,
                 params,
+                line,
                 ..
             } = stmt
             {
+                let already_declared = functions.iter().any(|f: &Symbol| f.name == *name);
+
+                if already_declared {
+                    return Err(CompileError::SemanticError {
+                        message: format!("function '{}' already declared", name),
+                        line: *line,
+                    });
+                }
+
                 functions.push(Symbol {
                     name: name.to_string(),
                     id: SymbolId(self.current_symbol_id),
@@ -80,7 +97,7 @@ impl Analyzer {
                 self.current_symbol_id += 1;
             }
         }
-        functions
+        Ok(functions)
     }
 
     fn enter_scope(&mut self, kind: ScopeType) -> usize {
@@ -420,10 +437,18 @@ impl Analyzer {
 
             Statement::NewLine => Ok(None),
 
-            _ => Err(CompileError::CompilerError {
-                message: format!("{:?} is not implemented in analyze_statement", stmt),
-                line: 0,
-            }),
+            /*
+                assume that the assembly is correct and we don't check it
+                which is kinda dangerous but you should know that anyway
+            */
+            Statement::Assembly { body } => Ok(Some(SemanticStatement::SemanticAssembly {
+                body: body.clone(),
+            })),
+            // Had to comment this to make the compiler happy
+            // _ => Err(CompileError::CompilerError {
+            //     message: format!("{:?} is not implemented in analyze_statement", stmt),
+            //     line: 0,
+            // }),
         }
     }
 
@@ -474,7 +499,7 @@ impl Analyzer {
                     });
                     return;
                 };
-                
+
                 let (expected_params, resolved_return) =
                     match &self.scope_table[scope_idx].symbols[sym_idx].kind {
                         SymbolKind::Function {

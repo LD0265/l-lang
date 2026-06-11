@@ -131,6 +131,10 @@ pub enum IrInstruction {
         function_name: String
     },
 
+    Assembly {
+        line: String,
+    },
+
     Ret,
 }
 

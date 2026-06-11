@@ -93,6 +93,7 @@ impl Mips {
                 left,
                 right,
             } => self.generate_binary_op(op, dest, left, right),
+            IrInstruction::Assembly { line } => self.emit_instruction(&line, ""),
         }
     }
 

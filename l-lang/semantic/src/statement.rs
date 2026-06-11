@@ -37,6 +37,10 @@ pub enum SemanticStatement {
         value: Expression,
     },
 
+    SemanticAssembly {
+        body: Vec<String>,
+    },
+
     SemanticReturn {
         value: Option<Expression>,
     },

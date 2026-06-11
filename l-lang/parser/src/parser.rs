@@ -45,6 +45,12 @@ impl Parser {
                 }
             }
 
+            Token::AsmBlock(code) => {
+                let body = code.clone();
+                self.advance();
+                Ok(Statement::Assembly { body })
+            }
+
             Token::Identifier(_) => {
                 let name = self.parse_identifier()?;
 
@@ -184,13 +190,13 @@ impl Parser {
     }
 
     fn parse_function(&mut self) -> Result<Statement> {
+        let line = self.line; // capture here, before parsing anything
+
         let return_type = self.parse_type()?;
         let name = self.parse_identifier()?;
 
         self.expect(Token::LeftParen)?;
-
         let params = self.parse_parameters()?;
-
         self.expect(Token::RightParen)?;
         self.expect(Token::LeftBrace)?;
 
@@ -203,7 +209,7 @@ impl Parser {
             name,
             params,
             body,
-            line: self.line,
+            line,
         })
     }
 

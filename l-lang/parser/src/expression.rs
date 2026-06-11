@@ -8,7 +8,7 @@ pub enum BinaryOperator {
     Div,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expression {
     Integer(i32),
     Bool(bool),
