@@ -11,6 +11,10 @@ pub enum ScopeType {
 
     IfBody {
         parent: SymbolId,
+    },
+
+    WhileBody {
+        parent: SymbolId,
     }
 }
 

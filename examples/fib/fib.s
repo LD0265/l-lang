@@ -6,11 +6,6 @@ _start:
         li      $v0, 10
         syscall
 
-read_i32:
-        li      $v0, 5
-        syscall
-        jr      $ra
-
 println_i32:
         addiu   $sp, $sp, -8
         sw      $a0, 0($sp)
@@ -22,84 +17,37 @@ println_i32:
         addiu   $sp, $sp, 8
         jr      $ra
 
-fib:
-        addiu   $sp, $sp, -12
-        sw      $ra, 4($sp)
-        sw      $a0, 0($sp)
-        lw      $t0, 0($sp)
-        li      $t1, 2
-        slt     $t2, $t0, $t1
-        beqz    $t2, if_0
-        lw      $t3, 0($sp)
-        move    $v0, $t3
-        lw      $ra, 4($sp)
-        addiu   $sp, $sp, 12
-        jr      $ra
-
-if_0:
-        lw      $t4, 0($sp)
-        li      $t5, 1
-        sub     $t6, $t4, $t5
-        move    $a0, $t6
-        jal     fib
-        move    $t5, $v0
-        sw      $t5, 8($sp)
-        lw      $t7, 0($sp)
-        li      $t8, 2
-        sub     $t9, $t7, $t8
-        move    $a0, $t9
-        jal     fib
-        move    $t8, $v0
-        lw      $t4, 8($sp)
-        add     $t7, $t4, $t8
-        move    $v0, $t7
-        lw      $ra, 4($sp)
-        addiu   $sp, $sp, 12
-        jr      $ra
-
-for:
+main:
         addiu   $sp, $sp, -16
-        sw      $ra, 8($sp)
-        sw      $a0, 0($sp)
-        sw      $a1, 4($sp)
+        sw      $ra, 12($sp)
+        j       L3
+L2:
+        li      $t0, 0
+        sw      $t0, 0($sp)
+        li      $t0, 1
+        sw      $t0, 4($sp)
+        j       L1
+L0:
+        lw      $t0, 0($sp)
+        move    $a0, $t0
+        jal     println_i32
         lw      $t0, 0($sp)
         lw      $t1, 4($sp)
-        sgt     $t2, $t0, $t1
-        beqz    $t2, if_1
-        lw      $ra, 8($sp)
-        addiu   $sp, $sp, 16
-        jr      $ra
-
-if_1:
-        lw      $t3, 0($sp)
-        move    $a0, $t3
-        jal     fib
-        move    $t4, $v0
-        move    $a0, $t4
-        jal     println_i32
-        lw      $t5, 0($sp)
-        li      $t6, 1
-        add     $t7, $t5, $t6
-        move    $a0, $t7
-        lw      $t6, 4($sp)
-        move    $a1, $t6
-        jal     for
-        lw      $ra, 8($sp)
-        addiu   $sp, $sp, 16
-        jr      $ra
-
-main:
-        addiu   $sp, $sp, -8
-        sw      $ra, 4($sp)
-        jal     read_i32
-        move    $t0, $v0
+        add     $t2, $t0, $t1
+        sw      $t2, 8($sp)
+        lw      $t0, 4($sp)
         sw      $t0, 0($sp)
-        li      $t1, 0
-        move    $a0, $t1
-        lw      $t2, 0($sp)
-        move    $a1, $t2
-        jal     for
-        lw      $ra, 4($sp)
-        addiu   $sp, $sp, 8
+        lw      $t0, 8($sp)
+        sw      $t0, 4($sp)
+L1:
+        lw      $t0, 0($sp)
+        li      $t1, 255
+        slt     $t2, $t0, $t1
+        bnez    $t2, L0
+L3:
+        li      $t0, 1
+        bnez    $t0, L2
+        lw      $ra, 12($sp)
+        addiu   $sp, $sp, 16
         jr      $ra
 

@@ -48,6 +48,7 @@ impl Parser {
             }
 
             Token::If => self.parse_if(),
+            Token::While => self.parse_while(),
 
             Token::Identifier(_) => {
                 let name = self.parse_identifier()?;
@@ -69,6 +70,27 @@ impl Parser {
                     Ok(Statement::FunctionCall {
                         name,
                         args,
+                        line: self.line,
+                    })
+                } else if matches!(
+                    self.peek(),
+                    Token::PlusEqual | Token::MinusEqual
+                ) {
+                    let op = match self.peek() {
+                        Token::PlusEqual => BinaryOperator::Add,
+                        Token::MinusEqual => BinaryOperator::Sub,
+                        _ => unreachable!(),
+                    };
+                    self.advance();
+                    let rhs = self.parse_expresion()?;
+                    self.expect(Token::Semicolon)?;
+                    Ok(Statement::Assign {
+                        var_name: name.clone(),
+                        value: Expression::BinaryOperation {
+                            op,
+                            left: Box::new(Expression::Identifier(name)),
+                            right: Box::new(rhs),
+                        },
                         line: self.line,
                     })
                 } else {
@@ -230,23 +252,40 @@ impl Parser {
 
         let mut else_label = None;
         let mut else_body = None;
-        let label_num = self.label_count;
 
         if self.peek() == &Token::Else {
             self.advance();
             self.expect(Token::LeftBrace)?;
             else_body = Some(self.parse_block()?);
             self.expect(Token::RightBrace)?;
-            else_label = Some(format!("else_{}", label_num));
+            else_label = Some(self.new_label());
         }
 
-        self.label_count += 1;
         Ok(Statement::If {
-            label: format!("if_{}", label_num),
+            label: self.new_label(),
             condition,
             body,
             else_label,
             else_body,
+        })
+    }
+
+    fn parse_while(&mut self) -> Result<Statement> {
+        self.advance();
+
+        self.expect(Token::LeftParen)?;
+        let condition = self.parse_expresion()?;
+        self.expect(Token::RightParen)?;
+
+        self.expect(Token::LeftBrace)?;
+        let body = self.parse_block()?;
+        self.expect(Token::RightBrace)?;
+
+        Ok(Statement::While {
+            body_label: self.new_label(),
+            body,
+            cond_label: self.new_label(),
+            condition,
         })
     }
 
@@ -438,6 +477,12 @@ impl Parser {
             operation,
             line: self.line,
         })
+    }
+
+    fn new_label(&mut self) -> String {
+        let s = format!("L{}", self.label_count);
+        self.label_count += 1;
+        s
     }
 
     fn advance(&mut self) {

@@ -11,20 +11,20 @@ pub enum WarningType {
     UninitializedVariable,
     LiteralOverflow,
     TypeMismatch,
-    UndeclaredFunction
+    UndeclaredFunction,
 }
 
 impl WarningType {
-    pub fn get_message(&self, name: String) -> String {
+    pub fn get_message(&self, msg: String) -> String {
         match self {
             WarningType::UninitializedVariable => {
-                format!("variable `{}` is declared but never initialized", name)
+                format!("variable `{}` is declared but never initialized", msg)
             }
             WarningType::LiteralOverflow => {
-                format!("literal value overflows the declared type of `{}`", name)
+                format!("literal value overflows the declared type of `{}`", msg)
             }
-            WarningType::TypeMismatch => format!("{}", name),
-            WarningType::UndeclaredFunction => format!("{}", name),
+            WarningType::TypeMismatch => format!("{}", msg),
+            WarningType::UndeclaredFunction => format!("{}", msg),
         }
     }
 }

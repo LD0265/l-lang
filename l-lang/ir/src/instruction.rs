@@ -100,6 +100,7 @@ impl IrValue {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BranchType {
     EqZero,
+    NeqZero,
 }
 
 #[derive(Debug, Clone, PartialEq)]

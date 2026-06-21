@@ -43,6 +43,13 @@ pub enum Statement {
         else_body: Option<Vec<Statement>>,
     },
 
+    While {
+        body_label: String,
+        body: Vec<Statement>,
+        cond_label: String,
+        condition: Expression,
+    },
+
     Assembly {
         body: Vec<String>,
     },

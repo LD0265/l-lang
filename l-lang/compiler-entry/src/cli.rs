@@ -34,6 +34,6 @@ pub struct Args {
     pub tokens: bool,
 
     /// Name of the output asm file
-    #[arg(short = 'S', default_value = "out.asm")]
+    #[arg(short = 'S', default_value = "out.s")]
     pub output: String,
 }

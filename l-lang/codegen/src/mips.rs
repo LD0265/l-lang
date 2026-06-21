@@ -57,6 +57,8 @@ impl Mips {
                 allocator.get_or_insert_spill(*slot);
             }
         }
+        // align stack to 8 bytes once we finish allocation
+        allocator.align8();
 
         self.emit_label(&name);
 
@@ -106,6 +108,7 @@ impl Mips {
             } => {
                 let instr = match branch_type {
                     BranchType::EqZero => "beqz",
+                    BranchType::NeqZero => "bnez",
                 };
                 self.emit_instruction(instr, &format!("{}, {}", reg, label));
             }
@@ -218,9 +221,6 @@ impl Mips {
                 allocator.insert_ra();
             }
         }
-
-        // align stack to 8 bytes once we finish allocation
-        allocator.align8();
     }
 
     fn emit_instruction(&mut self, opcode: &str, operands: &str) {

@@ -22,6 +22,8 @@ pub enum Token {
     Minus,
     Star,
     Slash,
+    PlusEqual,
+    MinusEqual,
     Not,
     And,
     Or,

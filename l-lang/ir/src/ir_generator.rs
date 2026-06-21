@@ -117,7 +117,11 @@ impl IrGenerator {
 
         for stmt in body {
             match stmt {
-                SemanticStatement::SemanticFunctionCall { name, .. } => {
+                SemanticStatement::SemanticFunctionCall { name, args, .. } => {
+                    for arg in args {
+                        self.collect_called_in_expr(arg, &mut called);
+                    }
+
                     called.insert(name.clone());
                 }
                 SemanticStatement::SemanticFunction { body, .. } => {
@@ -149,6 +153,15 @@ impl IrGenerator {
                     if let Some(else_b) = else_body {
                         called.extend(self.collect_called_functions(else_b));
                     }
+                }
+
+                SemanticStatement::SemanticWhile {
+                    condition,
+                    body,
+                    ..
+                } => {
+                    self.collect_called_in_expr(condition, &mut called);
+                    called.extend(self.collect_called_functions(body));
                 }
                 _ => {}
             }
@@ -216,6 +229,7 @@ impl IrGenerator {
         allocs: &mut Vec<IrInstruction>,
         rest: &mut Vec<IrInstruction>,
     ) {
+        self.reg_counter = 0;
         self.free_regs.clear();
         match stmt {
             SemanticStatement::SemanticVarDecl {
@@ -328,6 +342,38 @@ impl IrGenerator {
 
                 rest.push(IrInstruction::Label {
                     label_name: label.clone(),
+                });
+            }
+
+            SemanticStatement::SemanticWhile {
+                body_label,
+                body,
+                cond_label,
+                condition,
+            } => {
+                let (reg, instrs) = self.emit_expression(condition);
+
+                rest.push(IrInstruction::Jump {
+                    label: cond_label.clone(),
+                });
+
+                rest.push(IrInstruction::Label {
+                    label_name: body_label.clone(),
+                });
+
+                for stmt in body {
+                    self.emit_statement(stmt, allocs, rest);
+                }
+
+                rest.push(IrInstruction::Label {
+                    label_name: cond_label.clone(),
+                });
+
+                rest.extend(instrs);
+                rest.push(IrInstruction::Branch {
+                    reg,
+                    label: body_label.clone(),
+                    branch_type: BranchType::NeqZero,
                 });
             }
 

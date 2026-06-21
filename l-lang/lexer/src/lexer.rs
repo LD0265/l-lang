@@ -68,15 +68,9 @@ impl Lexer {
                 Ok(Token::Comma)
             }
 
-            '+' => {
-                self.advance();
-                Ok(Token::Plus)
-            }
+            '+' => self.scan_plus(),
 
-            '-' => {
-                self.advance();
-                Ok(Token::Minus)
-            }
+            '-' => self.scan_minus(),
 
             '*' => {
                 self.advance();
@@ -233,6 +227,36 @@ impl Lexer {
                 Ok(Token::EqualEqual)
             }
             _ => Ok(Token::Equal),
+        }
+    }
+
+    fn scan_plus(&mut self) -> Result<Token> {
+        self.advance();
+
+        let ch = self.peek();
+
+        match ch {
+            '=' => {
+                self.advance();
+                Ok(Token::PlusEqual)
+            }
+
+            _ => Ok(Token::Plus),
+        }
+    }
+
+    fn scan_minus(&mut self) -> Result<Token> {
+        self.advance();
+
+        let ch = self.peek();
+
+        match ch {
+            '=' => {
+                self.advance();
+                Ok(Token::MinusEqual)
+            }
+
+            _ => Ok(Token::Minus),
         }
     }
 

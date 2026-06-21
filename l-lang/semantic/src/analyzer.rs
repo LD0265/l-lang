@@ -287,7 +287,7 @@ impl Analyzer {
                 }
 
                 for arg in args.iter_mut() {
-                    self.analyze_expression(arg, *line);
+                    self.analyze_expression(arg, *line)?;
                 }
 
                 Ok(Some(SemanticStatement::SemanticFunctionCall {
@@ -317,7 +317,7 @@ impl Analyzer {
                 }
 
                 if let Some(expr) = operation.as_mut() {
-                    self.analyze_expression(expr, *line);
+                    self.analyze_expression(expr, *line)?;
 
                     // type mismatch check: declared type vs initializer type
                     let expr_type = self.resolve_type(expr);
@@ -377,7 +377,7 @@ impl Analyzer {
                 value,
                 line,
             } => {
-                self.analyze_expression(value, *line);
+                self.analyze_expression(value, *line)?;
 
                 let expr_type = self.resolve_type(value);
 
@@ -424,7 +424,7 @@ impl Analyzer {
 
             Statement::Return { return_value } => {
                 if let Some(expr) = return_value {
-                    self.analyze_expression(expr, 0);
+                    self.analyze_expression(expr, 0)?;
                 }
                 Ok(Some(SemanticStatement::SemanticReturn {
                     value: return_value.clone(),
@@ -446,7 +446,6 @@ impl Analyzer {
             //     message: format!("{:?} is not implemented in analyze_statement", stmt),
             //     line: 0,
             // }),
-            
             Statement::If {
                 label,
                 condition,
@@ -454,33 +453,29 @@ impl Analyzer {
                 else_label,
                 else_body,
             } => {
-                self.analyze_expression(condition, 0);
+                self.check_condition_for_undeclared(condition, 0)?;
 
                 self.enter_scope(ScopeType::IfBody {
                     parent: SymbolId(self.current_scope_id),
                 });
-
                 let mut sem_body = Vec::new();
                 for s in body {
                     if let Some(sem) = self.analyze_statement(s)? {
                         sem_body.push(sem);
                     }
                 }
-
                 self.exit_scope();
 
                 let sem_else_body = if let Some(else_stmts) = else_body {
                     self.enter_scope(ScopeType::IfBody {
                         parent: SymbolId(self.current_scope_id),
                     });
-
                     let mut else_sem = Vec::new();
                     for s in else_stmts {
                         if let Some(sem) = self.analyze_statement(s)? {
                             else_sem.push(sem);
                         }
                     }
-
                     self.exit_scope();
                     Some(else_sem)
                 } else {
@@ -495,13 +490,45 @@ impl Analyzer {
                     else_body: sem_else_body,
                 }))
             }
+
+            Statement::While {
+                body_label,
+                body,
+                cond_label,
+                condition,
+            } => {
+                self.check_condition_for_undeclared(condition, 0)?;
+
+                self.enter_scope(ScopeType::WhileBody {
+                    parent: SymbolId(self.current_scope_id),
+                });
+                let mut sem_body = Vec::new();
+                for s in body {
+                    if let Some(sem) = self.analyze_statement(s)? {
+                        sem_body.push(sem);
+                    }
+                }
+                self.exit_scope();
+
+                Ok(Some(SemanticStatement::SemanticWhile {
+                    cond_label: cond_label.clone(),
+                    condition: condition.clone(),
+                    body_label: body_label.clone(),
+                    body: sem_body,
+                }))
+            }
         }
     }
 
-    fn analyze_expression(&mut self, expr: &mut Expression, line: usize) {
+    fn analyze_expression(&mut self, expr: &mut Expression, line: usize) -> Result<()> {
         match expr {
             Expression::Identifier(name) => match self.find_symbol(name) {
-                None => {}
+                None => {
+                    return Err(CompileError::SemanticError {
+                        message: format!("use of undeclared variable '{}'", name),
+                        line,
+                    });
+                }
                 Some((scope_idx, sym_idx)) => {
                     let (is_uninit, var_type_clone) = {
                         let sym = &self.scope_table[scope_idx].symbols[sym_idx];
@@ -509,16 +536,16 @@ impl Analyzer {
                             SymbolKind::Variable { state, var_type } => {
                                 (matches!(state, State::Uninitialized), var_type.clone())
                             }
-                            _ => return,
+                            _ => return Ok(()),
                         }
                     };
 
                     if is_uninit {
-                        let msg = WarningType::UninitializedVariable.get_message(name.to_string());
                         self.warnings.push(SemanticWarning {
                             warning_type: WarningType::UninitializedVariable,
                             name: name.to_string(),
-                            message: msg,
+                            message: WarningType::UninitializedVariable
+                                .get_message(name.to_string()),
                             line,
                         });
                     } else {
@@ -535,15 +562,11 @@ impl Analyzer {
                 name,
                 args,
             } => {
-                // check function exists
                 let Some((scope_idx, sym_idx)) = self.find_symbol(name) else {
-                    self.warnings.push(SemanticWarning {
-                        warning_type: WarningType::UndeclaredFunction,
-                        name: name.clone(),
+                    return Err(CompileError::SemanticError {
                         message: format!("call to undeclared function '{}'", name),
                         line,
                     });
-                    return;
                 };
 
                 let (expected_params, resolved_return) =
@@ -553,41 +576,37 @@ impl Analyzer {
                             return_type,
                         } => (params.len(), return_type.clone()),
                         _ => {
-                            self.warnings.push(SemanticWarning {
-                                warning_type: WarningType::TypeMismatch,
-                                name: name.clone(),
+                            return Err(CompileError::SemanticError {
                                 message: format!("'{}' is not a function", name),
                                 line,
                             });
-                            return;
                         }
                     };
 
-                // check arg count matches param count
                 if args.len() != expected_params {
                     self.warnings.push(SemanticWarning {
                         warning_type: WarningType::TypeMismatch,
                         name: name.clone(),
-                        message: format!(
+                        message: WarningType::TypeMismatch.get_message(format!(
                             "'{}' expects {} args, got {}",
                             name,
                             expected_params,
                             args.len()
-                        ),
+                        )),
                         line,
                     });
                 }
 
                 for arg in args {
-                    self.analyze_expression(arg, line);
+                    self.analyze_expression(arg, line)?;
                 }
 
                 *return_type = Some(resolved_return);
             }
 
             Expression::BinaryOperation { op, left, right } => {
-                self.analyze_expression(left, line);
-                self.analyze_expression(right, line);
+                self.analyze_expression(left, line)?;
+                self.analyze_expression(right, line)?;
 
                 let left_type = self.resolve_type(left);
                 let right_type = self.resolve_type(right);
@@ -611,54 +630,53 @@ impl Analyzer {
                 );
 
                 if is_logical {
-                    // both operands must be bool
                     if !matches!(left_type, Some(Type::Bool))
                         || !matches!(right_type, Some(Type::Bool))
                     {
                         self.warnings.push(SemanticWarning {
                             warning_type: WarningType::TypeMismatch,
-                            name: "logical operators require bool operands".to_string(),
-                            message: "logical operators require bool operands".to_string(),
+                            name: "logical operator".to_string(),
+                            message: WarningType::TypeMismatch
+                                .get_message("logical operators require bool operands".to_string()),
                             line,
                         });
                     }
                 } else if is_arithmetic {
-                    // bool not valid in arithmetic
                     if matches!(left_type, Some(Type::Bool))
                         || matches!(right_type, Some(Type::Bool))
                     {
                         self.warnings.push(SemanticWarning {
                             warning_type: WarningType::TypeMismatch,
-                            name: "bool cannot be used in arithmetic expression".to_string(),
+                            name: "arithmetic operator".to_string(),
                             message: WarningType::TypeMismatch.get_message(
                                 "bool cannot be used in arithmetic expression".to_string(),
                             ),
                             line,
                         });
                     }
-                    // warn if types differ
-                    if let (Some(lt), Some(rt)) = (left_type, right_type) {
+                    if let (Some(lt), Some(rt)) = (&left_type, &right_type) {
                         if lt != rt {
                             self.warnings.push(SemanticWarning {
                                 warning_type: WarningType::TypeMismatch,
-                                name: format!("type mismatch in expression: {:?} and {:?}", lt, rt),
-                                message: format!(
+                                name: "arithmetic operator".to_string(),
+                                message: WarningType::TypeMismatch.get_message(format!(
                                     "type mismatch in expression: {:?} and {:?}",
                                     lt, rt
-                                ),
+                                )),
                                 line,
                             });
                         }
                     }
                 }
-                // comparisons just need matching types, which the type differ check covers
+
                 if is_comparison {
                     if let (Some(lt), Some(rt)) = (left_type, right_type) {
                         if lt != rt {
                             self.warnings.push(SemanticWarning {
                                 warning_type: WarningType::TypeMismatch,
-                                message: format!("cannot compare {:?} and {:?}", lt, rt),
-                                name: format!("cannot compare {:?} and {:?}", lt, rt),
+                                name: "comparison operator".to_string(),
+                                message: WarningType::TypeMismatch
+                                    .get_message(format!("cannot compare {:?} and {:?}", lt, rt)),
                                 line,
                             });
                         }
@@ -667,16 +685,16 @@ impl Analyzer {
             }
 
             Expression::UnaryOperation { op, operand } => {
-                self.analyze_expression(operand, line);
-
+                self.analyze_expression(operand, line)?;
                 let operand_type = self.resolve_type(operand);
                 match op {
                     UnaryOperator::Not => {
                         if !matches!(operand_type, Some(Type::Bool)) {
                             self.warnings.push(SemanticWarning {
                                 warning_type: WarningType::TypeMismatch,
-                                name: "not operator requires bool operand".to_string(),
-                                message: "not operator requires bool operand".to_string(),
+                                name: "not operator".to_string(),
+                                message: WarningType::TypeMismatch
+                                    .get_message("not operator requires bool operand".to_string()),
                                 line,
                             });
                         }
@@ -684,9 +702,17 @@ impl Analyzer {
                 }
             }
 
-            // Literals carry no symbol references, so we don't have to check anything
             Expression::Integer(_) | Expression::Bool(_) => {}
         }
+        Ok(())
+    }
+
+    fn check_condition_for_undeclared(
+        &mut self,
+        condition: &mut Expression,
+        line: usize,
+    ) -> Result<()> {
+        self.analyze_expression(condition, line)
     }
 
     fn resolve_type(&self, expr: &Expression) -> Option<Type> {
