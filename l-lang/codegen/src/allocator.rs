@@ -6,6 +6,7 @@ use semantic::symbol::SymbolId;
 pub struct Allocator {
     stack_variables: HashMap<SymbolId, usize>,
     spill_slots: HashMap<usize, usize>,
+    array_slots: HashMap<usize, usize>, // slot -> base offset
     ra_offset: Option<usize>,
     stack_size: usize,
 }
@@ -15,9 +16,28 @@ impl Allocator {
         Self {
             stack_variables: HashMap::new(),
             spill_slots: HashMap::new(),
+            array_slots: HashMap::new(),
             ra_offset: None,
             stack_size: 0,
         }
+    }
+
+    pub fn insert_array(&mut self, slot: usize, elem_size: usize, count: usize) {
+        // align to elem size
+        if elem_size > 1 {
+            self.stack_size = (self.stack_size + elem_size - 1) & !(elem_size - 1);
+        }
+        self.array_slots.insert(slot, self.stack_size);
+        self.stack_size += elem_size * count;
+    }
+
+    pub fn get_array_base_offset(&self, slot: usize) -> usize {
+        *self.array_slots.get(&slot).unwrap_or_else(|| {
+            panic!(
+                "no stack slot for array slot {} — was it ever allocated?",
+                slot
+            )
+        })
     }
 
     pub fn get_variable_offset(&self, id: &SymbolId) -> usize {

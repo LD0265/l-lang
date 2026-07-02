@@ -58,6 +58,16 @@ impl Lexer {
                 Ok(Token::RightBrace)
             }
 
+            '[' => {
+                self.advance();
+                Ok(Token::LeftBracket)
+            }
+
+            ']' => {
+                self.advance();
+                Ok(Token::RightBracket)
+            }
+
             ';' => {
                 self.advance();
                 Ok(Token::Semicolon)
@@ -75,6 +85,11 @@ impl Lexer {
             '*' => {
                 self.advance();
                 Ok(Token::Star)
+            }
+
+            '%' => {
+                self.advance();
+                Ok(Token::Percent)
             }
 
             '/' => {

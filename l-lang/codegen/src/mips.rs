@@ -44,10 +44,15 @@ impl Mips {
     fn generate_function(&mut self, ir_function: IrFunction) {
         let name = ir_function.name.clone(); // save before move
 
-        let (allocs, rest): (Vec<IrInstruction>, Vec<IrInstruction>) = ir_function
-            .instructions
-            .into_iter()
-            .partition(|i| matches!(i, IrInstruction::Alloc { .. } | IrInstruction::SaveRa));
+        let (allocs, rest): (Vec<IrInstruction>, Vec<IrInstruction>) =
+            ir_function.instructions.into_iter().partition(|i| {
+                matches!(
+                    i,
+                    IrInstruction::Alloc { .. }
+                        | IrInstruction::SaveRa
+                        | IrInstruction::AllocArray { .. }
+                )
+            });
 
         let mut allocator = Allocator::new();
         self.init_stack(allocs, &mut allocator);
@@ -136,10 +141,52 @@ impl Mips {
                 UnaryOperator::Not => {
                     self.emit_instruction("seq", &format!("{}, {}, $zero", dest, operand));
                 }
+
+                UnaryOperator::Deref | UnaryOperator::AddressOf => {
+                    unreachable!(
+                        "Deref/AddressOf are lowered to LoadIndirect/LoadAddr, never UnaryOp"
+                    )
+                }
             },
+
+            IrInstruction::LoadAddr { dest, symbol } => {
+                self.generate_load_addr(dest, symbol, allocator)
+            }
+
+            IrInstruction::LoadIndirect {
+                ir_type,
+                dest,
+                addr,
+            } => {
+                self.emit_instruction(
+                    &format!("l{}", ir_type.instruction()),
+                    &format!("{}, 0({})", dest, addr),
+                );
+            }
+
+            IrInstruction::StoreIndirect { ir_type, addr, src } => {
+                self.emit_instruction(
+                    &format!("s{}", ir_type.instruction()),
+                    &format!("{}, 0({})", src, addr),
+                );
+            }
+
+            IrInstruction::AllocArray { .. } => return,
+
+            IrInstruction::LoadArrayBase { dest, slot } => {
+                let offset = allocator.get_array_base_offset(slot);
+                self.emit_instruction("addiu", &format!("{}, $sp, {}", dest, offset));
+            }
 
             IrInstruction::Assembly { line } => self.emit_instruction(&line, ""),
         }
+    }
+
+    fn generate_load_addr(&mut self, dest: IrReg, symbol: SymbolId, allocator: &mut Allocator) {
+        self.emit_instruction(
+            "addiu",
+            &format!("{}, $sp, {}", dest, allocator.get_variable_offset(&symbol)),
+        );
     }
 
     fn generate_store_imm(&mut self, dest: IrReg, value: IrValue) {
@@ -215,10 +262,21 @@ impl Mips {
 
     fn init_stack(&self, allocs: Vec<IrInstruction>, allocator: &mut Allocator) {
         for instr in &allocs {
-            if let IrInstruction::Alloc { ir_type, symbol } = instr {
-                allocator.insert_variable(symbol, ir_type);
-            } else if let IrInstruction::SaveRa = instr {
-                allocator.insert_ra();
+            match instr {
+                IrInstruction::Alloc { ir_type, symbol } => {
+                    allocator.insert_variable(symbol, ir_type);
+                }
+                IrInstruction::AllocArray {
+                    slot,
+                    elem_type,
+                    count,
+                } => {
+                    allocator.insert_array(*slot, elem_type.size_bytes(), *count);
+                }
+                IrInstruction::SaveRa => {
+                    allocator.insert_ra();
+                }
+                _ => {}
             }
         }
     }

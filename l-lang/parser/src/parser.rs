@@ -72,10 +72,7 @@ impl Parser {
                         args,
                         line: self.line,
                     })
-                } else if matches!(
-                    self.peek(),
-                    Token::PlusEqual | Token::MinusEqual
-                ) {
+                } else if matches!(self.peek(), Token::PlusEqual | Token::MinusEqual) {
                     let op = match self.peek() {
                         Token::PlusEqual => BinaryOperator::Add,
                         Token::MinusEqual => BinaryOperator::Sub,
@@ -103,6 +100,18 @@ impl Parser {
                         line: self.line,
                     })
                 }
+            }
+
+            Token::Percent => {
+                let target = self.parse_unary()?; // parses %ptr, %%pptr, etc. as an expression
+                self.expect(Token::Equal)?;
+                let value = self.parse_expresion()?;
+                self.expect(Token::Semicolon)?;
+                Ok(Statement::DerefAssign {
+                    target,
+                    value,
+                    line: self.line,
+                })
             }
 
             Token::AsmBlock(code) => {
@@ -140,7 +149,7 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type> {
-        let t = match self.peek() {
+        let mut t = match self.peek() {
             Token::Void => Type::Void,
             Token::I8 => Type::Int8,
             Token::I16 => Type::Int16,
@@ -156,6 +165,12 @@ impl Parser {
         };
 
         self.advance();
+
+        while matches!(self.peek(), Token::Percent) {
+            self.advance();
+            t = Type::Pointer(Box::new(t));
+        }
+
         Ok(t)
     }
 
@@ -398,7 +413,37 @@ impl Parser {
                 operand: Box::new(operand),
             });
         }
-        self.parse_primary()
+
+        if matches!(self.peek(), Token::Percent) {
+            self.advance();
+            let operand = self.parse_unary()?;
+            return Ok(Expression::UnaryOperation {
+                op: UnaryOperator::Deref,
+                operand: Box::new(operand),
+            });
+        }
+
+        if matches!(self.peek(), Token::And) {
+            self.advance();
+            let operand = self.parse_unary()?;
+            return Ok(Expression::UnaryOperation {
+                op: UnaryOperator::AddressOf,
+                operand: Box::new(operand),
+            });
+        }
+
+        let mut expr = self.parse_primary()?;
+        while matches!(self.peek(), Token::LeftBracket) {
+            self.advance();
+            let index = self.parse_expresion()?;
+            self.expect(Token::RightBracket)?;
+            expr = Expression::Index {
+                base: Box::new(expr),
+                index: Box::new(index),
+            };
+        }
+
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<Expression> {
@@ -451,6 +496,24 @@ impl Parser {
                 Ok(expr)
             }
 
+            Token::LeftBrace => {
+                self.advance();
+                let mut exprs: Vec<Box<Expression>> = Vec::new();
+                let mut i = 0;
+                while self.peek() != &Token::RightBrace {
+                    exprs.push(Box::new(self.parse_expresion()?));
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                    }
+                    i += 1;
+                }
+                self.expect(Token::RightBrace)?;
+                Ok(Expression::Array {
+                    values: exprs,
+                    size: i,
+                })
+            }
+
             _ => Err(CompileError::ParseError {
                 message: format!("{:?} not implemented in parse_primary", self.peek()),
                 line: self.line,
@@ -463,10 +526,31 @@ impl Parser {
         let var_name = self.parse_identifier()?;
 
         let mut operation: Option<Expression> = None;
+        let arr_size;
 
         if self.peek() == &Token::Equal {
             self.advance();
             operation = Some(self.parse_expresion()?);
+        } else if self.peek() == &Token::LeftBracket {
+            self.advance();
+            match self.peek() {
+                Token::IntegerLiteral(n) => {
+                    arr_size = *n as usize;
+                    self.advance();
+                }
+                _ => {
+                    return Err(CompileError::ParseError {
+                        message: String::from("Expected integer literal in array size initializer"),
+                        line: self.line,
+                    });
+                }
+            }
+            self.expect(Token::RightBracket)?;
+
+            operation = Some(Expression::Array {
+                values: Vec::new(),
+                size: arr_size,
+            })
         }
 
         self.expect(Token::Semicolon)?;

@@ -37,6 +37,12 @@ pub enum SemanticStatement {
         value: Expression,
     },
 
+    SemanticDerefAssign {
+        target: Expression,
+        value: Expression,
+        line: usize,
+    },
+
     SemanticIf {
         label: String,
         condition: Expression,

@@ -19,6 +19,8 @@ pub enum BinaryOperator {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOperator {
     Not,
+    Deref,
+    AddressOf,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +38,16 @@ pub enum Expression {
     UnaryOperation {
         op: UnaryOperator,
         operand: Box<Expression>,
+    },
+
+    Array {
+        values: Vec<Box<Expression>>,
+        size: usize,
+    },
+
+    Index {
+        base: Box<Expression>,
+        index: Box<Expression>,
     },
 
     FunctionCall {

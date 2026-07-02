@@ -35,6 +35,12 @@ pub enum Statement {
         line: usize,
     },
 
+    DerefAssign {
+        target: Expression,
+        value: Expression,
+        line: usize,
+    },
+
     If {
         label: String,
         condition: Expression,

@@ -13,6 +13,7 @@ pub enum IrType {
     I32,
     Bool,
     Void,
+    Word,
 }
 
 impl IrType {
@@ -23,6 +24,7 @@ impl IrType {
             Type::Int32 => IrType::I32,
             Type::Bool => IrType::Bool,
             Type::Void => IrType::Void,
+            Type::Pointer(_) => IrType::Word,
         }
     }
 
@@ -33,6 +35,7 @@ impl IrType {
             IrType::I32 => 4,
             IrType::Bool => 1,
             IrType::Void => 0,
+            IrType::Word => 4,
         }
     }
 
@@ -43,6 +46,7 @@ impl IrType {
             IrType::I32 => String::from("w"),
             IrType::Bool => String::from("b"),
             IrType::Void => String::from(""),
+            IrType::Word => String::from("w"),
         }
     }
 }
@@ -141,6 +145,34 @@ pub enum IrInstruction {
     LoadTemp {
         slot: usize,
         dest: IrReg,
+    },
+
+    LoadAddr {
+        dest: IrReg,
+        symbol: SymbolId,
+    },
+
+    LoadIndirect {
+        ir_type: IrType,
+        dest: IrReg,
+        addr: IrReg,
+    },
+
+    StoreIndirect {
+        ir_type: IrType,
+        addr: IrReg,
+        src: IrReg,
+    },
+
+    AllocArray {
+        slot: usize,
+        elem_type: IrType,
+        count: usize,
+    },
+    
+    LoadArrayBase {
+        dest: IrReg,
+        slot: usize,
     },
 
     BinaryOp {

@@ -221,7 +221,7 @@ impl Analyzer {
 
                     sem_params.push(SemanticParam {
                         name: param.name.clone(),
-                        param_type: param.param_type,
+                        param_type: param.param_type.clone(),
                         symbol: param_id,
                     });
                 }
@@ -390,15 +390,25 @@ impl Analyzer {
                     // type mismatch check
                     if let Some(et) = expr_type {
                         if et != var_type_clone {
-                            self.warnings.push(SemanticWarning {
-                                warning_type: WarningType::TypeMismatch,
-                                name: var_name.to_string(),
-                                message: format!(
-                                    "cannot assign {:?} to variable '{}' of type {:?}",
-                                    et, var_name, var_type_clone
-                                ),
-                                line: *line,
-                            });
+                            if var_type_clone == Type::Void {
+                                return Err(CompileError::SemanticError {
+                                    message: format!(
+                                        "cannot assign {:?} to variable '{}' of type {:?}",
+                                        et, var_name, var_type_clone
+                                    ),
+                                    line: *line,
+                                });
+                            } else {
+                                self.warnings.push(SemanticWarning {
+                                    warning_type: WarningType::TypeMismatch,
+                                    name: var_name.to_string(),
+                                    message: format!(
+                                        "cannot assign {:?} to variable '{}' of type {:?}",
+                                        et, var_name, var_type_clone
+                                    ),
+                                    line: *line,
+                                });
+                            }
                         }
                     }
 
@@ -419,6 +429,38 @@ impl Analyzer {
                 Ok(Some(SemanticStatement::SemanticAssign {
                     symbol: symbol_id,
                     value: value.clone(),
+                }))
+            }
+
+            Statement::DerefAssign {
+                target,
+                value,
+                line,
+            } => {
+                self.analyze_expression(target, *line)?;
+                self.analyze_expression(value, *line)?;
+
+                let target_type = self.resolve_type(target);
+                let value_type = self.resolve_type(value);
+
+                if let (Some(tt), Some(vt)) = (&target_type, &value_type) {
+                    if tt != vt {
+                        self.warnings.push(SemanticWarning {
+                            warning_type: WarningType::TypeMismatch,
+                            name: "pointer assignment".to_string(),
+                            message: format!(
+                                "cannot assign {:?} through pointer expecting {:?}",
+                                vt, tt
+                            ),
+                            line: *line,
+                        });
+                    }
+                }
+
+                Ok(Some(SemanticStatement::SemanticDerefAssign {
+                    target: target.clone(),
+                    value: value.clone(),
+                    line: *line,
                 }))
             }
 
@@ -656,15 +698,19 @@ impl Analyzer {
                     }
                     if let (Some(lt), Some(rt)) = (&left_type, &right_type) {
                         if lt != rt {
-                            self.warnings.push(SemanticWarning {
-                                warning_type: WarningType::TypeMismatch,
-                                name: "arithmetic operator".to_string(),
-                                message: WarningType::TypeMismatch.get_message(format!(
-                                    "type mismatch in expression: {:?} and {:?}",
-                                    lt, rt
-                                )),
-                                line,
-                            });
+                            if let Type::Pointer(t) = rt
+                                && **t != *lt
+                            {
+                                self.warnings.push(SemanticWarning {
+                                    warning_type: WarningType::TypeMismatch,
+                                    name: "arithmetic operator".to_string(),
+                                    message: WarningType::TypeMismatch.get_message(format!(
+                                        "type mismatch in expression: {:?} and {:?}",
+                                        lt, rt
+                                    )),
+                                    line,
+                                });
+                            }
                         }
                     }
                 }
@@ -687,6 +733,7 @@ impl Analyzer {
             Expression::UnaryOperation { op, operand } => {
                 self.analyze_expression(operand, line)?;
                 let operand_type = self.resolve_type(operand);
+
                 match op {
                     UnaryOperator::Not => {
                         if !matches!(operand_type, Some(Type::Bool)) {
@@ -699,12 +746,100 @@ impl Analyzer {
                             });
                         }
                     }
+
+                    UnaryOperator::Deref => {
+                        if !matches!(operand_type, Some(Type::Pointer(_))) {
+                            return Err(CompileError::SemanticError {
+                                message: format!(
+                                    "cannot dereference non-pointer type {:?}",
+                                    operand_type
+                                ),
+                                line,
+                            });
+                        }
+                    }
+
+                    UnaryOperator::AddressOf => {
+                        if !self.is_lvalue(operand.as_ref()) {
+                            return Err(CompileError::SemanticError {
+                                message: "cannot take address of a non-lvalue expression"
+                                    .to_string(),
+                                line,
+                            });
+                        }
+                    }
+                }
+            }
+
+            Expression::Array { values, .. } => {
+                for val in values.iter_mut() {
+                    self.analyze_expression(val, line)?;
+                }
+
+                // warn if initializer count doesn't match declared size
+                // though idk if i wanna make that a feature yet
+
+                // if *size > 0 && values.len() != *size {
+                //     self.warnings.push(SemanticWarning {
+                //         warning_type: WarningType::TypeMismatch,
+                //         name: "array literal".to_string(),
+                //         message: format!(
+                //             "array declared with size {} but {} initializers provided",
+                //             size,
+                //             values.len()
+                //         ),
+                //         line,
+                //     });
+                // }
+
+                // check all elements have the same type
+                let types: Vec<Option<Type>> =
+                    values.iter().map(|v| self.resolve_type(v)).collect();
+                if let Some(first) = types.first().and_then(|t| t.as_ref()) {
+                    for (i, t) in types.iter().enumerate().skip(1) {
+                        if t.as_ref() != Some(first) {
+                            self.warnings.push(SemanticWarning {
+                                warning_type: WarningType::TypeMismatch,
+                                name: "array literal".to_string(),
+                                message: format!(
+                                    "array element {} has type {:?}, expected {:?}",
+                                    i, t, first
+                                ),
+                                line,
+                            });
+                        }
+                    }
+                }
+            }
+
+            Expression::Index { base, index } => {
+                self.analyze_expression(base, line)?;
+                self.analyze_expression(index, line)?;
+
+                let base_type = self.resolve_type(base);
+                if !matches!(base_type, Some(Type::Pointer(_))) {
+                    return Err(CompileError::SemanticError {
+                        message: format!("cannot index non-pointer type {:?}", base_type),
+                        line,
+                    });
                 }
             }
 
             Expression::Integer(_) | Expression::Bool(_) => {}
         }
         Ok(())
+    }
+
+    fn is_lvalue(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::Identifier(_) => true,
+            Expression::Index { base, .. } => self.is_lvalue(base),
+            Expression::UnaryOperation {
+                op: UnaryOperator::Deref,
+                ..
+            } => true, // %ptr is an lvalue
+            _ => false,
+        }
     }
 
     fn check_condition_for_undeclared(
@@ -728,8 +863,16 @@ impl Analyzer {
                 }
             }
 
-            Expression::UnaryOperation { op, .. } => match op {
+            Expression::UnaryOperation { op, operand } => match op {
                 UnaryOperator::Not => Some(Type::Bool),
+                UnaryOperator::Deref => match self.resolve_type(operand)? {
+                    Type::Pointer(inner) => Some(*inner),
+                    _ => None, // not a pointer; analyze_expression will warn/error separately
+                },
+                UnaryOperator::AddressOf => {
+                    let inner = self.resolve_type(operand)?;
+                    Some(Type::Pointer(Box::new(inner)))
+                }
             },
 
             Expression::BinaryOperation { op, left, .. } => {
@@ -750,6 +893,17 @@ impl Analyzer {
                     self.resolve_type(left) // arithmetic takes left operand type
                 }
             }
+
+            Expression::Array { values, .. } => {
+                // infer element type from first value, wrap in Pointer
+                let elem_type = values.first().and_then(|v| self.resolve_type(v))?;
+                Some(Type::Pointer(Box::new(elem_type)))
+            }
+
+            Expression::Index { base, .. } => match self.resolve_type(base)? {
+                Type::Pointer(inner) => Some(*inner),
+                _ => None,
+            },
 
             Expression::FunctionCall { return_type, .. } => return_type.clone(),
         }

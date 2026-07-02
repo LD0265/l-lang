@@ -22,6 +22,7 @@ pub enum Token {
     Minus,
     Star,
     Slash,
+    Percent,
     PlusEqual,
     MinusEqual,
     Not,
@@ -41,6 +42,8 @@ pub enum Token {
     RightParen,
     LeftBrace,
     RightBrace,
+    LeftBracket,
+    RightBracket,
     Semicolon,
     Comma,
 
