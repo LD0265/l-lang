@@ -4,7 +4,7 @@ use util::error::{CompileError, Result};
 use crate::{
     expression::{BinaryOperator, Expression, UnaryOperator},
     program::Program,
-    statement::{Parameter, Statement},
+    statement::{FunctionFlag, Parameter, Statement},
     types::Type,
 };
 
@@ -12,16 +12,16 @@ pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
     line: usize,
-    label_count: usize,
+    pub label_count: usize,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
+    pub fn new(tokens: Vec<Token>, label_count: usize) -> Self {
         Parser {
             tokens,
             current: 0,
             line: 1,
-            label_count: 0,
+            label_count,
         }
     }
 
@@ -38,7 +38,12 @@ impl Parser {
     fn parse_statement(&mut self) -> Result<Statement> {
         match self.peek() {
             Token::Void | Token::Bool | Token::I32 | Token::I16 | Token::I8 => {
-                let is_function = self.peek_ahead(2) == Some(&Token::LeftParen);
+                let mut offset = 1;
+                while self.peek_ahead(offset) == Some(&Token::Percent) {
+                    offset += 1;
+                }
+
+                let is_function = self.peek_ahead(offset + 1) == Some(&Token::LeftParen);
 
                 if is_function {
                     self.parse_function()
@@ -51,7 +56,53 @@ impl Parser {
             Token::While => self.parse_while(),
 
             Token::Identifier(_) => {
+                let mut offset = 1;
+                while self.peek_ahead(offset) == Some(&Token::Percent) {
+                    offset += 1;
+                }
+
+                if self.peek_ahead(offset + 1) == Some(&Token::LeftParen) {
+                    return self.parse_function();
+                }
+
+                if matches!(self.peek_ahead(offset), Some(Token::Identifier(_))) {
+                    return self.parse_variable_decleration();
+                }
+
                 let name = self.parse_identifier()?;
+
+                // postfix chain: field access or index before assignment
+                if matches!(self.peek(), Token::Period | Token::LeftBracket) {
+                    let mut expr = Expression::Identifier(name);
+                    loop {
+                        if matches!(self.peek(), Token::Period) {
+                            self.advance();
+                            let field = self.parse_identifier()?;
+                            expr = Expression::FieldAccess {
+                                base: Box::new(expr),
+                                field,
+                            };
+                        } else if matches!(self.peek(), Token::LeftBracket) {
+                            self.advance();
+                            let index = self.parse_expresion()?;
+                            self.expect(Token::RightBracket)?;
+                            expr = Expression::Index {
+                                base: Box::new(expr),
+                                index: Box::new(index),
+                            };
+                        } else {
+                            break;
+                        }
+                    }
+                    self.expect(Token::Equal)?;
+                    let value = self.parse_expresion()?;
+                    self.expect(Token::Semicolon)?;
+                    return Ok(Statement::LValueAssign {
+                        target: expr,
+                        value,
+                        line: self.line,
+                    });
+                }
 
                 if self.peek() == &Token::LeftParen {
                     self.advance();
@@ -114,6 +165,38 @@ impl Parser {
                 })
             }
 
+            Token::Struct => {
+                self.advance();
+                let name = self.parse_identifier()?;
+                self.expect(Token::LeftBrace)?;
+                let mut fields = Vec::new();
+                while !matches!(self.peek(), Token::RightBrace | Token::Eof) {
+                    if matches!(self.peek(), Token::Newline) {
+                        self.advance();
+                        continue;
+                    }
+                    let decl = self.parse_variable_decleration()?;
+                    if let Statement::VariableDeclaration {
+                        var_name,
+                        var_type,
+                        operation,
+                        ..
+                    } = decl
+                    {
+                        let arr_size = match &operation {
+                            Some(Expression::Array { size, values }) if values.is_empty() => {
+                                Some(*size)
+                            }
+                            _ => None,
+                        };
+                        fields.push((var_name, var_type, arr_size));
+                    }
+                }
+                self.expect(Token::RightBrace)?;
+                self.expect(Token::Semicolon)?;
+                Ok(Statement::StructDef { name, fields })
+            }
+
             Token::AsmBlock(code) => {
                 let body = code.clone();
                 self.advance();
@@ -155,7 +238,7 @@ impl Parser {
             Token::I16 => Type::Int16,
             Token::I32 => Type::Int32,
             Token::Bool => Type::Bool,
-
+            Token::Identifier(name) => Type::Struct(name.clone()),
             _ => {
                 return Err(CompileError::ParseError {
                     message: format!("Expected type, found {:?}", self.peek()),
@@ -235,10 +318,41 @@ impl Parser {
 
         let return_type = self.parse_type()?;
         let name = self.parse_identifier()?;
+        let mut function_flags: Vec<FunctionFlag> = Vec::new();
 
         self.expect(Token::LeftParen)?;
         let params = self.parse_parameters()?;
         self.expect(Token::RightParen)?;
+
+        // function flags
+        if self.peek() == &Token::Pound {
+            self.advance();
+            self.expect(Token::LeftBracket)?;
+
+            while self.peek() != &Token::RightBracket {
+                let str = self.parse_identifier()?;
+                let flag = match str.as_str() {
+                    "no_stack" => FunctionFlag::NoStack,
+                    _ => {
+                        return Err(CompileError::ParseError {
+                            message: format!("{} is not a valid function flag", str),
+                            line,
+                        });
+                    }
+                };
+
+                if !function_flags.contains(&flag) {
+                    function_flags.push(flag);
+                }
+
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+            }
+
+            self.expect(Token::RightBracket)?;
+        }
+
         self.expect(Token::LeftBrace)?;
 
         let body = self.parse_block()?;
@@ -250,6 +364,7 @@ impl Parser {
             name,
             params,
             body,
+            flags: function_flags,
             line,
         })
     }
@@ -433,14 +548,23 @@ impl Parser {
         }
 
         let mut expr = self.parse_primary()?;
-        while matches!(self.peek(), Token::LeftBracket) {
-            self.advance();
-            let index = self.parse_expresion()?;
-            self.expect(Token::RightBracket)?;
-            expr = Expression::Index {
-                base: Box::new(expr),
-                index: Box::new(index),
-            };
+        while matches!(self.peek(), Token::LeftBracket | Token::Period) {
+            if matches!(self.peek(), Token::LeftBracket) {
+                self.advance();
+                let index = self.parse_expresion()?;
+                self.expect(Token::RightBracket)?;
+                expr = Expression::Index {
+                    base: Box::new(expr),
+                    index: Box::new(index),
+                };
+            } else {
+                self.advance();
+                let field = self.parse_identifier()?;
+                expr = Expression::FieldAccess {
+                    base: Box::new(expr),
+                    field,
+                };
+            }
         }
 
         Ok(expr)
@@ -458,6 +582,18 @@ impl Parser {
                 let b = *b;
                 self.advance();
                 Ok(Expression::Bool(b))
+            }
+
+            Token::StringLiteral(s) => {
+                let str = s.to_string();
+                self.advance();
+                Ok(Expression::String(str))
+            }
+
+            Token::Size => {
+                self.advance();
+                let t = self.parse_type()?;
+                Ok(Expression::SizeOf(t))
             }
 
             Token::Identifier(name) => {
@@ -522,6 +658,7 @@ impl Parser {
     }
 
     fn parse_variable_decleration(&mut self) -> Result<Statement> {
+        let line = self.line;
         let var_type = self.parse_type()?;
         let var_name = self.parse_identifier()?;
 
@@ -559,7 +696,7 @@ impl Parser {
             var_name,
             var_type,
             operation,
-            line: self.line,
+            line,
         })
     }
 

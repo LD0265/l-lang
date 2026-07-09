@@ -25,6 +25,8 @@ impl Mips {
 
         let has_main = self.program.functions.iter().any(|f| f.name == "main");
 
+        self.compiled.push_str(".text\n");
+
         if has_main {
             self.compiled.push_str(".globl _start\n");
             self.compiled.push_str("_start:\n");
@@ -49,8 +51,9 @@ impl Mips {
                 matches!(
                     i,
                     IrInstruction::Alloc { .. }
-                        | IrInstruction::SaveRa
                         | IrInstruction::AllocArray { .. }
+                        | IrInstruction::AllocStruct { .. }
+                        | IrInstruction::SaveRa
                 )
             });
 
@@ -178,6 +181,8 @@ impl Mips {
                 self.emit_instruction("addiu", &format!("{}, $sp, {}", dest, offset));
             }
 
+            IrInstruction::AllocStruct { .. } => return,
+
             IrInstruction::Assembly { line } => self.emit_instruction(&line, ""),
         }
     }
@@ -224,11 +229,16 @@ impl Mips {
     }
 
     fn generate_binary_op(&mut self, op: BinaryOperator, dest: IrReg, left: IrReg, right: IrReg) {
+        if matches!(op, BinaryOperator::Div) {
+            self.emit_instruction("div", &format!("{}, {}", left, right));
+            self.emit_instruction("mflo", &format!("{}", dest));
+            return;
+        }
+
         let instr = match op {
             BinaryOperator::Add => "add",
             BinaryOperator::Sub => "sub",
             BinaryOperator::Mul => "mul",
-            BinaryOperator::Div => "div",
             BinaryOperator::Eq => "seq",
             BinaryOperator::NotEq => "sne",
             BinaryOperator::Lt => "slt",
@@ -237,11 +247,8 @@ impl Mips {
             BinaryOperator::GtEq => "sge",
             BinaryOperator::And => "and",
             BinaryOperator::Or => "or",
+            BinaryOperator::Div => unreachable!(),
         };
-
-        if instr == "div" {
-            panic!("div not implemented in mips.rs")
-        }
 
         self.emit_instruction(instr, &format!("{}, {}, {}", dest, left, right));
     }
@@ -276,6 +283,10 @@ impl Mips {
                 IrInstruction::SaveRa => {
                     allocator.insert_ra();
                 }
+                IrInstruction::AllocStruct { symbol, size_bytes } => {
+                    allocator.insert_struct(symbol, *size_bytes);
+                }
+
                 _ => {}
             }
         }

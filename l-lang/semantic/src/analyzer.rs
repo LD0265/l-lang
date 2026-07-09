@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use crate::{
     program::SemanticProgram,
     scope::{Scope, ScopeId, ScopeType},
     statement::{SemanticParam, SemanticStatement},
+    structs::{StructDef, StructField},
     symbol::{State, Symbol, SymbolId, SymbolKind},
     warning::{SemanticWarning, WarningType},
 };
@@ -21,6 +24,7 @@ pub struct Analyzer {
     warnings: Vec<SemanticWarning>,
     current_scope_id: usize,
     current_symbol_id: usize,
+    struct_table: HashMap<String, StructDef>,
 }
 
 impl Analyzer {
@@ -32,6 +36,7 @@ impl Analyzer {
             warnings: Vec::new(),
             current_scope_id: 0,
             current_symbol_id: 0,
+            struct_table: HashMap::new(),
         }
     }
 
@@ -49,10 +54,13 @@ impl Analyzer {
             scope_table: self.scope_table.clone(),
             body: self.body.clone(),
             diagnostics: self.warnings.clone(),
+            struct_table: self.struct_table.clone(),
         })
     }
 
     fn init_scope_table(&mut self) -> Result<()> {
+        self.collect_struct_defs()?;
+
         let global_functions = self.collect_global_functions();
         let funcs = match global_functions {
             Ok(vec) => vec,
@@ -66,6 +74,16 @@ impl Analyzer {
             symbols: funcs,
         });
 
+        Ok(())
+    }
+
+    fn collect_struct_defs(&mut self) -> Result<()> {
+        for stmt in &self.statements.body.clone() {
+            if let Statement::StructDef { name, fields } = stmt {
+                let def = self.build_struct_def(name, fields);
+                self.struct_table.insert(name.clone(), def);
+            }
+        }
         Ok(())
     }
 
@@ -118,14 +136,16 @@ impl Analyzer {
     }
 
     fn exit_scope(&mut self) {
-        // warn on any variables that were never initialized
         let symbols = self.scope_table[self.current_scope_id].symbols.clone();
         for sym in &symbols {
             if let SymbolKind::Variable {
                 state: State::Uninitialized,
-                ..
+                var_type,
             } = &sym.kind
             {
+                if matches!(var_type, Type::Struct(_)) {
+                    continue;
+                }
                 self.warnings.push(SemanticWarning {
                     warning_type: WarningType::UninitializedVariable,
                     name: sym.name.clone(),
@@ -178,6 +198,7 @@ impl Analyzer {
                 name,
                 params,
                 body,
+                flags,
                 line,
                 ..
             } => {
@@ -251,6 +272,7 @@ impl Analyzer {
                     return_type: return_type.clone(),
                     params: sem_params.clone(),
                     body: sem_body,
+                    flags: flags.to_vec(),
                     line: *line,
                 }))
             }
@@ -319,19 +341,27 @@ impl Analyzer {
                 if let Some(expr) = operation.as_mut() {
                     self.analyze_expression(expr, *line)?;
 
-                    // type mismatch check: declared type vs initializer type
                     let expr_type = self.resolve_type(expr);
                     if let Some(et) = expr_type {
-                        if et != *var_type && *var_type != Type::Void {
-                            self.warnings.push(SemanticWarning {
-                                warning_type: WarningType::TypeMismatch,
-                                name: var_name.to_string(),
-                                message: format!(
-                                    "variable '{}' declared as {:?} but assigned {:?}",
-                                    var_name, var_type, et
-                                ),
-                                line: *line,
-                            });
+                        if et != *var_type
+                            && *var_type != Type::Void
+                            && et != Type::Pointer(Box::new(Type::Void))
+                        {
+                            // don't warn when assigning an integer literal to any integer type
+                            let is_int_literal_to_int = matches!(expr, Expression::Integer(_))
+                                && matches!(var_type, Type::Int8 | Type::Int16 | Type::Int32);
+
+                            if !is_int_literal_to_int {
+                                self.warnings.push(SemanticWarning {
+                                    warning_type: WarningType::TypeMismatch,
+                                    name: var_name.to_string(),
+                                    message: format!(
+                                        "variable '{}' declared as {:?} but assigned {:?}",
+                                        var_name, var_type, et
+                                    ),
+                                    line: *line,
+                                });
+                            }
                         }
                     }
                 }
@@ -399,15 +429,23 @@ impl Analyzer {
                                     line: *line,
                                 });
                             } else {
-                                self.warnings.push(SemanticWarning {
-                                    warning_type: WarningType::TypeMismatch,
-                                    name: var_name.to_string(),
-                                    message: format!(
-                                        "cannot assign {:?} to variable '{}' of type {:?}",
-                                        et, var_name, var_type_clone
-                                    ),
-                                    line: *line,
-                                });
+                                let is_int_literal_to_int = matches!(value, Expression::Integer(_))
+                                    && matches!(
+                                        var_type_clone,
+                                        Type::Int8 | Type::Int16 | Type::Int32
+                                    );
+
+                                if !is_int_literal_to_int {
+                                    self.warnings.push(SemanticWarning {
+                                        warning_type: WarningType::TypeMismatch,
+                                        name: var_name.to_string(),
+                                        message: format!(
+                                            "cannot assign {:?} to variable '{}' of type {:?}",
+                                            et, var_name, var_type_clone
+                                        ),
+                                        line: *line,
+                                    });
+                                }
                             }
                         }
                     }
@@ -461,6 +499,29 @@ impl Analyzer {
                     target: target.clone(),
                     value: value.clone(),
                     line: *line,
+                }))
+            }
+
+            Statement::StructDef { .. } => Ok(None),
+
+            Statement::LValueAssign {
+                target,
+                value,
+                line,
+            } => {
+                self.analyze_expression(target, *line)?;
+                self.analyze_expression(value, *line)?;
+
+                if !self.is_lvalue(target) {
+                    return Err(CompileError::SemanticError {
+                        message: "left side of assignment is not an lvalue".to_string(),
+                        line: *line,
+                    });
+                }
+
+                Ok(Some(SemanticStatement::SemanticLValueAssign {
+                    target: target.clone(),
+                    value: value.clone(),
                 }))
             }
 
@@ -582,7 +643,7 @@ impl Analyzer {
                         }
                     };
 
-                    if is_uninit {
+                    if is_uninit && !matches!(var_type_clone, Type::Struct(_)) {
                         self.warnings.push(SemanticWarning {
                             warning_type: WarningType::UninitializedVariable,
                             name: name.to_string(),
@@ -590,7 +651,7 @@ impl Analyzer {
                                 .get_message(name.to_string()),
                             line,
                         });
-                    } else {
+                    } else if !is_uninit {
                         self.scope_table[scope_idx].symbols[sym_idx].kind = SymbolKind::Variable {
                             var_type: var_type_clone,
                             state: State::Used,
@@ -718,13 +779,27 @@ impl Analyzer {
                 if is_comparison {
                     if let (Some(lt), Some(rt)) = (left_type, right_type) {
                         if lt != rt {
-                            self.warnings.push(SemanticWarning {
-                                warning_type: WarningType::TypeMismatch,
-                                name: "comparison operator".to_string(),
-                                message: WarningType::TypeMismatch
-                                    .get_message(format!("cannot compare {:?} and {:?}", lt, rt)),
-                                line,
-                            });
+                            let is_int_literal =
+                                |side: &Expression| matches!(side, Expression::Integer(_));
+                            let both_ints = matches!(
+                                (&lt, &rt),
+                                (
+                                    Type::Int8 | Type::Int16 | Type::Int32,
+                                    Type::Int8 | Type::Int16 | Type::Int32
+                                )
+                            );
+
+                            if !(both_ints && (is_int_literal(left) || is_int_literal(right))) {
+                                self.warnings.push(SemanticWarning {
+                                    warning_type: WarningType::TypeMismatch,
+                                    name: "comparison operator".to_string(),
+                                    message: WarningType::TypeMismatch.get_message(format!(
+                                        "cannot compare {:?} and {:?}",
+                                        lt, rt
+                                    )),
+                                    line,
+                                });
+                            }
                         }
                     }
                 }
@@ -825,7 +900,52 @@ impl Analyzer {
                 }
             }
 
-            Expression::Integer(_) | Expression::Bool(_) => {}
+            Expression::FieldAccess { base, field } => {
+                self.analyze_expression(base, line)?;
+                let base_type = self.resolve_type(base);
+
+                let struct_name = match &base_type {
+                    Some(Type::Struct(n)) => n.clone(),
+                    Some(Type::Pointer(inner)) => match inner.as_ref() {
+                        Type::Struct(n) => n.clone(),
+                        _ => {
+                            return Err(CompileError::SemanticError {
+                                message: format!(
+                                    "field access on non-struct pointer type {:?}",
+                                    base_type
+                                ),
+                                line,
+                            });
+                        }
+                    },
+                    _ => {
+                        return Err(CompileError::SemanticError {
+                            message: format!("field access on non-struct type {:?}", base_type),
+                            line,
+                        });
+                    }
+                };
+
+                if !self.struct_table.contains_key(&struct_name) {
+                    return Err(CompileError::SemanticError {
+                        message: format!("unknown struct '{}'", struct_name),
+                        line,
+                    });
+                }
+
+                let def = &self.struct_table[&struct_name];
+                if !def.fields.iter().any(|f| f.name == *field) {
+                    return Err(CompileError::SemanticError {
+                        message: format!("struct '{}' has no field '{}'", struct_name, field),
+                        line,
+                    });
+                }
+            }
+
+            Expression::Integer(_)
+            | Expression::Bool(_)
+            | Expression::String(_)
+            | Expression::SizeOf(_) => {}
         }
         Ok(())
     }
@@ -837,7 +957,11 @@ impl Analyzer {
             Expression::UnaryOperation {
                 op: UnaryOperator::Deref,
                 ..
-            } => true, // %ptr is an lvalue
+            } => true,
+            Expression::FieldAccess { base, .. } => {
+                self.is_lvalue(base)
+                    || matches!(self.resolve_type(base), Some(Type::Pointer(inner)) if matches!(*inner, Type::Struct(_)))
+            }
             _ => false,
         }
     }
@@ -905,7 +1029,74 @@ impl Analyzer {
                 _ => None,
             },
 
+            Expression::FieldAccess { base, field } => {
+                let struct_name = match self.resolve_type(base)? {
+                    Type::Struct(n) => n,
+                    Type::Pointer(inner) => match *inner {
+                        Type::Struct(n) => n,
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                let def = self.struct_table.get(&struct_name)?;
+                def.fields
+                    .iter()
+                    .find(|f| f.name == *field)
+                    .map(|f| f.field_type.clone())
+            }
+
+            Expression::String(_) => Some(Type::Pointer(Box::new(Type::Int8))),
+
             Expression::FunctionCall { return_type, .. } => return_type.clone(),
+            Expression::SizeOf(_) => Some(Type::Int32),
+        }
+    }
+
+    fn type_size(&self, t: &Type) -> usize {
+        match t {
+            Type::Int8 | Type::Bool => 1,
+            Type::Int16 => 2,
+            Type::Int32 => 4,
+            Type::Pointer(_) => 4,
+            Type::Void => 0,
+            Type::Struct(name) => self
+                .struct_table
+                .get(name)
+                .map(|d| d.total_size)
+                .unwrap_or(0),
+        }
+    }
+
+    fn build_struct_def(&self, name: &str, fields: &[(String, Type, Option<usize>)]) -> StructDef {
+        let mut offset = 0;
+        let mut result = Vec::new();
+        for (fname, ftype, arr_size) in fields {
+            let elem_size = self.type_size(ftype);
+            let size = match arr_size {
+                Some(n) => {
+                    let pointee_size = match ftype {
+                        Type::Pointer(inner) => self.type_size(inner),
+                        _ => elem_size,
+                    };
+                    pointee_size * n
+                }
+                None => elem_size,
+            };
+            let align = size.min(4).max(1);
+            offset = (offset + align - 1) & !(align - 1);
+            result.push(StructField {
+                name: fname.clone(),
+                field_type: ftype.clone(),
+                offset,
+                inline_array_size: *arr_size,
+            });
+            offset += size;
+        }
+        let total_size = (offset + 3) & !3;
+        StructDef {
+            name: name.to_string(),
+            fields: result,
+            total_size,
         }
     }
 }

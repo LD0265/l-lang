@@ -21,8 +21,11 @@ impl Compiler {
         print_sat: bool,
         print_ir: bool,
     ) -> Result<Self> {
-        let stdlib = include_str!("../../std/io.l");
-        let mut stdlib_lexer = Lexer::new(&stdlib.to_string());
+        let stdio = include_str!("../../std/io.l");
+        let stdmem = include_str!("../../std/mem.l");
+        let stdstr = include_str!("../../std/string.l");
+        let stdlib = format!("{}{}{}", stdio, stdmem, stdstr);
+        let mut stdlib_lexer = Lexer::new(&stdlib);
         let stdlib_tokens = stdlib_lexer.tokenize()?;
         let mut user_lexer = Lexer::new(&source);
         let user_tokens = user_lexer.tokenize()?;
@@ -32,9 +35,9 @@ impl Compiler {
             println!("USER: {:#?}", user_tokens);
         }
 
-        let mut stdlib_parser = Parser::new(stdlib_tokens.clone());
+        let mut stdlib_parser = Parser::new(stdlib_tokens.clone(), 0);
         let stdlib_ast = stdlib_parser.parse()?;
-        let mut user_parser = Parser::new(user_tokens.clone());
+        let mut user_parser = Parser::new(user_tokens.clone(), stdlib_parser.label_count);
         let user_ast = user_parser.parse()?;
 
         if print_ast {

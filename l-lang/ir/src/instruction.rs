@@ -25,6 +25,7 @@ impl IrType {
             Type::Bool => IrType::Bool,
             Type::Void => IrType::Void,
             Type::Pointer(_) => IrType::Word,
+            Type::Struct(_) => IrType::Word,
         }
     }
 
@@ -120,6 +121,11 @@ pub enum IrInstruction {
         symbol: SymbolId,
     },
 
+    AllocStruct {
+        symbol: SymbolId,
+        size_bytes: usize,
+    },
+
     StoreImm {
         dest: IrReg,
         value: IrValue,
@@ -169,7 +175,7 @@ pub enum IrInstruction {
         elem_type: IrType,
         count: usize,
     },
-    
+
     LoadArrayBase {
         dest: IrReg,
         slot: usize,

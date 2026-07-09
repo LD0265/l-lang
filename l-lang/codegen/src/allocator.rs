@@ -86,6 +86,12 @@ impl Allocator {
         self.stack_size += 4;
     }
 
+    pub fn insert_struct(&mut self, id: &SymbolId, size_bytes: usize) {
+        self.stack_size = (self.stack_size + 3) & !3;
+        self.stack_variables.insert(id.clone(), self.stack_size);
+        self.stack_size += size_bytes;
+    }
+
     // needed for mips apparently
     pub fn align8(&mut self) {
         self.stack_size = (self.stack_size + 7) & !7

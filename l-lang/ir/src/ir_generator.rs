@@ -1,13 +1,15 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use parser::{
     expression::{BinaryOperator, Expression, UnaryOperator},
+    statement::FunctionFlag,
     types::Type,
 };
 use semantic::{
     program::SemanticProgram,
     scope::ScopeId,
     statement::{SemanticParam, SemanticStatement},
+    structs::StructDef,
     symbol::{Symbol, SymbolId, SymbolKind},
 };
 
@@ -23,10 +25,12 @@ pub struct IrGenerator {
     current_scope_id: usize,
     spill_counter: usize,
     scope_cursor: usize,
+    struct_table: HashMap<String, StructDef>,
 }
 
 impl IrGenerator {
     pub fn new(program: SemanticProgram) -> Self {
+        let struct_table = program.struct_table.clone();
         Self {
             program,
             reg_counter: 0,
@@ -34,6 +38,7 @@ impl IrGenerator {
             current_scope_id: 0,
             spill_counter: 0,
             scope_cursor: 0,
+            struct_table,
         }
     }
 
@@ -47,6 +52,7 @@ impl IrGenerator {
                 return_type,
                 body,
                 params,
+                flags,
                 name,
                 ..
             } = stmt
@@ -90,6 +96,18 @@ impl IrGenerator {
                 }
 
                 instructions.extend(rest);
+
+                if flags.contains(&FunctionFlag::NoStack) {
+                    instructions = instructions
+                        .into_iter()
+                        .filter(|i| {
+                            !matches!(
+                                i,
+                                IrInstruction::Alloc { .. } | IrInstruction::StoreStack { .. }
+                            )
+                        })
+                        .collect();
+                }
 
                 functions.push(IrFunction {
                     name,
@@ -166,6 +184,12 @@ impl IrGenerator {
                 } => {
                     self.collect_called_in_expr(condition, &mut called);
                     called.extend(self.collect_called_functions(body));
+                }
+                SemanticStatement::SemanticDerefAssign { value, .. } => {
+                    self.collect_called_in_expr(value, &mut called);
+                }
+                SemanticStatement::SemanticLValueAssign { value, .. } => {
+                    self.collect_called_in_expr(value, &mut called);
                 }
                 _ => {}
             }
@@ -261,10 +285,46 @@ impl IrGenerator {
             } => {
                 let sym = self.lookup(symbol).clone();
                 if let SymbolKind::Variable { ref var_type, .. } = sym.kind {
+                    if let Type::Struct(sname) = var_type {
+                        let size = self.struct_table[sname].total_size;
+                        allocs.push(IrInstruction::AllocStruct {
+                            symbol: symbol.clone(),
+                            size_bytes: size,
+                        });
+                        return;
+                    }
+
                     allocs.push(IrInstruction::Alloc {
                         ir_type: IrType::from(var_type),
                         symbol: symbol.clone(),
                     });
+
+                    // no values but size > 0 -> allocate the buffer and store base address
+                    if let Some(Expression::Array { values, size }) = initializer {
+                        if values.is_empty() && *size > 0 {
+                            if let Type::Pointer(inner) = var_type {
+                                let ir_elem_type = IrType::from(inner.as_ref());
+                                let slot = self.spill_counter;
+                                self.spill_counter += 1;
+                                allocs.push(IrInstruction::AllocArray {
+                                    slot,
+                                    elem_type: ir_elem_type,
+                                    count: *size,
+                                });
+                                let base_reg = self.fresh_reg();
+                                rest.push(IrInstruction::LoadArrayBase {
+                                    dest: base_reg,
+                                    slot,
+                                });
+                                rest.push(IrInstruction::StoreStack {
+                                    ir_type: IrType::from(var_type),
+                                    symbol: symbol.clone(),
+                                    src: base_reg,
+                                });
+                                return;
+                            }
+                        }
+                    }
 
                     if let Some(expr) = initializer {
                         let (reg, store_instrs) = self.emit_expression(expr);
@@ -308,7 +368,6 @@ impl IrGenerator {
             }
 
             SemanticStatement::SemanticDerefAssign { target, value, .. } => {
-                // target is Expression::UnaryOperation { op: Deref, operand }
                 let Expression::UnaryOperation {
                     op: UnaryOperator::Deref,
                     operand,
@@ -318,18 +377,40 @@ impl IrGenerator {
                 };
 
                 let (addr_reg, addr_instrs) = self.emit_expression(operand);
-                let (val_reg, val_instrs) = self.emit_expression(value);
                 let pointee_type = self.resolve_pointee_type(operand);
 
+                let (spill_instrs, reload_instrs, addr_reg_final) = if Self::contains_call(value) {
+                    let slot = self.spill_counter;
+                    self.spill_counter += 1;
+                    let reloaded = self.fresh_reg();
+                    (
+                        vec![IrInstruction::SpillTemp {
+                            slot,
+                            src: addr_reg,
+                        }],
+                        vec![IrInstruction::LoadTemp {
+                            slot,
+                            dest: reloaded,
+                        }],
+                        reloaded,
+                    )
+                } else {
+                    (vec![], vec![], addr_reg)
+                };
+
+                let (val_reg, val_instrs) = self.emit_expression(value);
+
                 rest.extend(addr_instrs);
+                rest.extend(spill_instrs);
                 rest.extend(val_instrs);
+                rest.extend(reload_instrs);
                 rest.push(IrInstruction::StoreIndirect {
                     ir_type: IrType::from(&pointee_type),
-                    addr: addr_reg,
+                    addr: addr_reg_final,
                     src: val_reg,
                 });
 
-                self.free_reg(addr_reg);
+                self.free_reg(addr_reg_final);
                 self.free_reg(val_reg);
             }
 
@@ -432,6 +513,23 @@ impl IrGenerator {
                 });
             }
 
+            SemanticStatement::SemanticLValueAssign { target, value } => {
+                let (addr_reg, addr_instrs) = self.compute_lvalue_address(target);
+                let (val_reg, val_instrs) = self.emit_expression(value);
+                let store_type = self.resolve_expr_type(target);
+
+                rest.extend(addr_instrs);
+                rest.extend(val_instrs);
+                rest.push(IrInstruction::StoreIndirect {
+                    ir_type: IrType::from(&store_type),
+                    addr: addr_reg,
+                    src: val_reg,
+                });
+
+                self.free_reg(addr_reg);
+                self.free_reg(val_reg);
+            }
+
             SemanticStatement::SemanticReturn { value } => {
                 if let Some(expr) = value {
                     let (reg, instrs) = self.emit_expression(expr);
@@ -513,58 +611,7 @@ impl IrGenerator {
             }
 
             Expression::UnaryOperation { op, operand } => match op {
-                UnaryOperator::AddressOf => match operand.as_ref() {
-                    Expression::Identifier(name) => {
-                        let sym_id = self.lookup_symbol_id(name);
-                        let dest = self.fresh_reg();
-                        (
-                            dest,
-                            vec![IrInstruction::LoadAddr {
-                                dest,
-                                symbol: sym_id,
-                            }],
-                        )
-                    }
-                    Expression::Index { base, index } => {
-                        let elem_type = self.resolve_pointee_type(base);
-                        let ir_elem_type = IrType::from(&elem_type);
-                        let elem_size = ir_elem_type.size_bytes() as i32;
-
-                        let (base_reg, base_instrs) = self.emit_expression(base);
-                        let (index_reg, index_instrs) = self.emit_expression(index);
-                        let mut instrs = base_instrs;
-                        instrs.extend(index_instrs);
-
-                        let addr_reg = self.fresh_reg();
-                        let scale_reg = self.fresh_reg();
-                        let size_reg = self.fresh_reg();
-                        instrs.push(IrInstruction::StoreImm {
-                            dest: size_reg,
-                            value: IrValue::Immediate(elem_size),
-                        });
-                        instrs.push(IrInstruction::BinaryOp {
-                            op: BinaryOperator::Mul,
-                            dest: scale_reg,
-                            left: index_reg,
-                            right: size_reg,
-                        });
-                        instrs.push(IrInstruction::BinaryOp {
-                            op: BinaryOperator::Add,
-                            dest: addr_reg,
-                            left: base_reg,
-                            right: scale_reg,
-                        });
-                        self.free_reg(base_reg);
-                        self.free_reg(index_reg);
-                        self.free_reg(scale_reg);
-                        self.free_reg(size_reg);
-
-                        (addr_reg, instrs)
-                    }
-                    _ => panic!(
-                        "AddressOf of non-lvalue reached IR — semantic analysis should have caught this"
-                    ),
-                },
+                UnaryOperator::AddressOf => self.compute_lvalue_address(operand),
 
                 UnaryOperator::Deref => {
                     let (addr_reg, addr_instrs) = self.emit_expression(operand);
@@ -769,6 +816,37 @@ impl IrGenerator {
                 (dest, instrs)
             }
 
+            Expression::FieldAccess { base, field } => {
+                if self.field_is_inline_array(base, field) {
+                    let (addr_reg, instrs) = self.compute_lvalue_address(expr);
+                    (addr_reg, instrs)
+                } else {
+                    let field_type = self.resolve_expr_type(expr);
+                    let (addr_reg, addr_instrs) = self.compute_lvalue_address(expr);
+                    let dest = self.fresh_reg();
+                    let mut instrs = addr_instrs;
+                    instrs.push(IrInstruction::LoadIndirect {
+                        ir_type: IrType::from(&field_type),
+                        dest,
+                        addr: addr_reg,
+                    });
+                    self.free_reg(addr_reg);
+                    (dest, instrs)
+                }
+            }
+
+            Expression::SizeOf(t) => {
+                let size = self.type_size(t) as i32;
+                let dest = self.fresh_reg();
+                (
+                    dest,
+                    vec![IrInstruction::StoreImm {
+                        dest,
+                        value: IrValue::Immediate(size),
+                    }],
+                )
+            }
+
             Expression::FunctionCall { name, args, .. } => {
                 let mut instrs = Vec::new();
 
@@ -792,6 +870,70 @@ impl IrGenerator {
                 });
 
                 (dest, instrs)
+            }
+
+            Expression::String(s) => {
+                let bytes: Vec<i8> = s
+                    .bytes()
+                    .map(|b| b as i8)
+                    .chain(std::iter::once(0))
+                    .collect();
+                let count = bytes.len();
+
+                let slot = self.spill_counter;
+                self.spill_counter += 1;
+
+                let mut instrs = Vec::new();
+
+                instrs.push(IrInstruction::AllocArray {
+                    slot,
+                    elem_type: IrType::I8,
+                    count,
+                });
+
+                let base_reg = self.fresh_reg();
+                instrs.push(IrInstruction::LoadArrayBase {
+                    dest: base_reg,
+                    slot,
+                });
+
+                for (i, &byte) in bytes.iter().enumerate() {
+                    let (val_reg, val_instrs) =
+                        self.emit_expression(&Expression::Integer(byte as i32));
+                    instrs.extend(val_instrs);
+
+                    if i == 0 {
+                        instrs.push(IrInstruction::StoreIndirect {
+                            ir_type: IrType::I8,
+                            addr: base_reg,
+                            src: val_reg,
+                        });
+                    } else {
+                        let offset_reg = self.fresh_reg();
+                        let addr_reg = self.fresh_reg();
+                        instrs.push(IrInstruction::StoreImm {
+                            dest: offset_reg,
+                            value: IrValue::Immediate(i as i32),
+                        });
+                        instrs.push(IrInstruction::BinaryOp {
+                            op: BinaryOperator::Add,
+                            dest: addr_reg,
+                            left: base_reg,
+                            right: offset_reg,
+                        });
+                        instrs.push(IrInstruction::StoreIndirect {
+                            ir_type: IrType::I8,
+                            addr: addr_reg,
+                            src: val_reg,
+                        });
+                        self.free_reg(offset_reg);
+                        self.free_reg(addr_reg);
+                    }
+
+                    self.free_reg(val_reg);
+                }
+
+                (base_reg, instrs)
             }
         }
     }
@@ -857,6 +999,27 @@ impl IrGenerator {
                 Type::Pointer(inner) => *inner,
                 other => panic!("cannot index non-pointer type {:?}", other),
             },
+
+            Expression::FieldAccess { base, field } => {
+                let struct_name = match self.resolve_expr_type(base) {
+                    Type::Struct(n) => n,
+                    Type::Pointer(inner) => match *inner {
+                        Type::Struct(n) => n,
+                        _ => panic!("field access on non-struct pointer"),
+                    },
+                    _ => panic!("field access on non-struct"),
+                };
+                self.struct_table[&struct_name]
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *field)
+                    .unwrap_or_else(|| panic!("field '{}' not found", field))
+                    .field_type
+                    .clone()
+            }
+            Expression::SizeOf(_) => Type::Int32,
+
+            Expression::String(_) => Type::Pointer(Box::new(Type::Int8)),
         }
     }
 
@@ -864,6 +1027,175 @@ impl IrGenerator {
         match self.resolve_expr_type(expr) {
             Type::Pointer(inner) => *inner,
             other => panic!("expected pointer type, got {:?}", other),
+        }
+    }
+
+    fn get_field_offset(&self, base: &Expression, field: &str) -> usize {
+        let base_type = self.resolve_expr_type(base);
+        let struct_name = match base_type {
+            Type::Struct(n) => n,
+            Type::Pointer(inner) => match *inner {
+                Type::Struct(n) => n,
+                _ => panic!("not a struct pointer"),
+            },
+            _ => panic!("not a struct"),
+        };
+        self.struct_table[&struct_name]
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+            .unwrap_or_else(|| panic!("field '{}' not found", field))
+            .offset
+    }
+
+    fn compute_struct_base_addr(&mut self, base: &Expression) -> (IrReg, Vec<IrInstruction>) {
+        let base_type = self.resolve_expr_type(base);
+        match base_type {
+            Type::Struct(_) => match base {
+                Expression::Identifier(name) => {
+                    let sym_id = self.lookup_symbol_id(name);
+                    let dest = self.fresh_reg();
+                    (
+                        dest,
+                        vec![IrInstruction::LoadAddr {
+                            dest,
+                            symbol: sym_id,
+                        }],
+                    )
+                }
+                Expression::FieldAccess { .. } => self.compute_lvalue_address(base),
+                _ => panic!(
+                    "compute_struct_base_addr on unsupported expression {:?}",
+                    base
+                ),
+            },
+            Type::Pointer(inner) if matches!(*inner, Type::Struct(_)) => self.emit_expression(base),
+            _ => panic!("compute_struct_base_addr on non-struct"),
+        }
+    }
+
+    fn compute_lvalue_address(&mut self, expr: &Expression) -> (IrReg, Vec<IrInstruction>) {
+        match expr {
+            Expression::Identifier(name) => {
+                let sym_id = self.lookup_symbol_id(name);
+                let dest = self.fresh_reg();
+                (
+                    dest,
+                    vec![IrInstruction::LoadAddr {
+                        dest,
+                        symbol: sym_id,
+                    }],
+                )
+            }
+
+            Expression::UnaryOperation {
+                op: UnaryOperator::Deref,
+                operand,
+            } => {
+                self.emit_expression(operand) // operand is the address
+            }
+
+            Expression::Index { base, index } => {
+                let elem_type = self.resolve_pointee_type(base);
+                let ir_elem_type = IrType::from(&elem_type);
+                let elem_size = ir_elem_type.size_bytes() as i32;
+                let (base_reg, base_instrs) = self.emit_expression(base);
+                let (index_reg, index_instrs) = self.emit_expression(index);
+                let mut instrs = base_instrs;
+                instrs.extend(index_instrs);
+                let addr_reg = self.fresh_reg();
+                if elem_size == 1 {
+                    instrs.push(IrInstruction::BinaryOp {
+                        op: BinaryOperator::Add,
+                        dest: addr_reg,
+                        left: base_reg,
+                        right: index_reg,
+                    });
+                } else {
+                    let scale_reg = self.fresh_reg();
+                    let size_reg = self.fresh_reg();
+                    instrs.push(IrInstruction::StoreImm {
+                        dest: size_reg,
+                        value: IrValue::Immediate(elem_size),
+                    });
+                    instrs.push(IrInstruction::BinaryOp {
+                        op: BinaryOperator::Mul,
+                        dest: scale_reg,
+                        left: index_reg,
+                        right: size_reg,
+                    });
+                    instrs.push(IrInstruction::BinaryOp {
+                        op: BinaryOperator::Add,
+                        dest: addr_reg,
+                        left: base_reg,
+                        right: scale_reg,
+                    });
+                    self.free_reg(scale_reg);
+                    self.free_reg(size_reg);
+                }
+                self.free_reg(base_reg);
+                self.free_reg(index_reg);
+                (addr_reg, instrs)
+            }
+
+            Expression::FieldAccess { base, field } => {
+                let (base_addr, base_instrs) = self.compute_struct_base_addr(base);
+                let offset = self.get_field_offset(base, field) as i32;
+                let mut instrs = base_instrs;
+                if offset == 0 {
+                    (base_addr, instrs)
+                } else {
+                    let offset_reg = self.fresh_reg();
+                    let addr_reg = self.fresh_reg();
+                    instrs.push(IrInstruction::StoreImm {
+                        dest: offset_reg,
+                        value: IrValue::Immediate(offset),
+                    });
+                    instrs.push(IrInstruction::BinaryOp {
+                        op: BinaryOperator::Add,
+                        dest: addr_reg,
+                        left: base_addr,
+                        right: offset_reg,
+                    });
+                    self.free_reg(base_addr);
+                    self.free_reg(offset_reg);
+                    (addr_reg, instrs)
+                }
+            }
+
+            _ => panic!("compute_lvalue_address: not an lvalue"),
+        }
+    }
+
+    fn field_is_inline_array(&self, base: &Expression, field: &str) -> bool {
+        let struct_name = match self.resolve_expr_type(base) {
+            Type::Struct(n) => n,
+            Type::Pointer(inner) => match *inner {
+                Type::Struct(n) => n,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        self.struct_table[&struct_name]
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+            .map(|f| f.inline_array_size.is_some())
+            .unwrap_or(false)
+    }
+
+    fn type_size(&self, t: &Type) -> usize {
+        match t {
+            Type::Int8 | Type::Bool => 1,
+            Type::Int16 => 2,
+            Type::Int32 => 4,
+            Type::Pointer(_) => 4,
+            Type::Void => 0,
+            Type::Struct(name) => self
+                .struct_table
+                .get(name)
+                .map(|d| d.total_size)
+                .unwrap_or(0),
         }
     }
 }

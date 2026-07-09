@@ -9,9 +9,12 @@ pub enum Token {
     Else,
     While,
     Return,
+    Struct,
+    Size,
     ASMKeyword,
 
     IntegerLiteral(i32),
+    StringLiteral(String),
     BoolLiteral(bool),
     AsmBlock(Vec<String>),
 
@@ -46,6 +49,9 @@ pub enum Token {
     RightBracket,
     Semicolon,
     Comma,
+    Period,
+    Quote,
+    Pound,
 
     Eof,
     Newline,
@@ -63,6 +69,8 @@ impl Token {
             "else" => Some(Token::Else),
             "while" => Some(Token::While),
             "return" => Some(Token::Return),
+            "struct" => Some(Token::Struct),
+            "size" => Some(Token::Size),
             "true" => Some(Token::BoolLiteral(true)),
             "false" => Some(Token::BoolLiteral(false)),
             "__asm__" => Some(Token::ASMKeyword),

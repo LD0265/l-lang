@@ -1,4 +1,5 @@
 use parser::expression::Expression;
+use parser::statement::FunctionFlag;
 use parser::types::Type;
 
 use crate::symbol::SymbolId;
@@ -18,6 +19,7 @@ pub enum SemanticStatement {
         return_type: Type,
         params: Vec<SemanticParam>,
         body: Vec<SemanticStatement>,
+        flags: Vec<FunctionFlag>,
         line: usize,
     },
 
@@ -41,6 +43,11 @@ pub enum SemanticStatement {
         target: Expression,
         value: Expression,
         line: usize,
+    },
+
+    SemanticLValueAssign {
+        target: Expression,
+        value: Expression,
     },
 
     SemanticIf {

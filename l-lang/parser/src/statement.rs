@@ -7,12 +7,18 @@ pub struct Parameter {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum FunctionFlag {
+    NoStack,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     FunctionDecleration {
         return_type: Type,
         name: String,
         params: Vec<Parameter>,
         body: Vec<Statement>,
+        flags: Vec<FunctionFlag>,
         line: usize,
     },
 
@@ -36,6 +42,17 @@ pub enum Statement {
     },
 
     DerefAssign {
+        target: Expression,
+        value: Expression,
+        line: usize,
+    },
+
+    StructDef {
+        name: String,
+        fields: Vec<(String, Type, Option<usize>)>,
+    },
+
+    LValueAssign {
         target: Expression,
         value: Expression,
         line: usize,

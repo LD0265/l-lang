@@ -14,6 +14,7 @@ pub enum Type {
     Int16,
     Int32,
     Pointer(Box<Type>),
+    Struct(String),
 }
 
 impl Type {
@@ -25,6 +26,7 @@ impl Type {
             Type::Int16 => TypeSize::HalfWord,
             Type::Int32 => TypeSize::Word,
             Type::Pointer(_) => TypeSize::Word, // 4 bytes on mips, regardless of pointee
+            Type::Struct(_) => TypeSize::Word, // structs are always accessed by address (pointer-sized)
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::token::Token;
+use crate::token::Token::{self};
 use util::error::{CompileError, Result};
 
 pub struct Lexer {
@@ -78,6 +78,11 @@ impl Lexer {
                 Ok(Token::Comma)
             }
 
+            '.' => {
+                self.advance();
+                Ok(Token::Period)
+            }
+
             '+' => self.scan_plus(),
 
             '-' => self.scan_minus(),
@@ -96,6 +101,13 @@ impl Lexer {
                 self.advance();
                 Ok(Token::Slash)
             }
+
+            '#' => {
+                self.advance();
+                Ok(Token::Pound)
+            }
+
+            '"' => self.scan_string_literal(),
 
             '<' => self.scan_less_than(),
             '>' => self.scan_greater_than(),
@@ -135,6 +147,18 @@ impl Lexer {
 
         let token = Token::keyword(&text).unwrap_or(Token::Identifier(text));
         Ok(token)
+    }
+
+    fn scan_string_literal(&mut self) -> Result<Token> {
+        self.advance();
+
+        let mut str = String::new();
+        while self.peek() != '"' {
+            str.push(self.advance());
+        }
+        self.advance();
+
+        Ok(Token::StringLiteral(str))
     }
 
     fn scan_asm_block(&mut self) -> Result<Token> {

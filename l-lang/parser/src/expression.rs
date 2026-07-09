@@ -27,7 +27,9 @@ pub enum UnaryOperator {
 pub enum Expression {
     Integer(i32),
     Bool(bool),
+    String(String),
     Identifier(String),
+    SizeOf(Type),
 
     BinaryOperation {
         op: BinaryOperator,
@@ -48,6 +50,11 @@ pub enum Expression {
     Index {
         base: Box<Expression>,
         index: Box<Expression>,
+    },
+
+    FieldAccess {
+        base: Box<Expression>,
+        field: String,
     },
 
     FunctionCall {
