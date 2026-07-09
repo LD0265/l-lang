@@ -18,7 +18,7 @@ Run these in your terminal emulator of choice
 
 ```bash
 git clone https://github.com/LD0265/l-lang.git
-cd ecc
+cd l-lang
 cargo build -r
 cargo install --path .
 ```
