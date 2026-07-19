@@ -260,10 +260,14 @@ impl Analyzer {
                     .iter()
                     .any(|s| matches!(s, SemanticStatement::SemanticReturn { .. }));
                 if !has_return {
-                    return Err(CompileError::SemanticError {
-                        message: format!("function `{}` has no return statement", name),
-                        line: *line,
-                    });
+                    if return_type != &Type::Void {
+                        return Err(CompileError::SemanticError {
+                            message: format!("function `{}` has no return statement", name),
+                            line: *line,
+                        });
+                    } else {
+                        sem_body.push(SemanticStatement::SemanticReturn { value: None });
+                    }
                 }
 
                 Ok(Some(SemanticStatement::SemanticFunction {
@@ -287,7 +291,7 @@ impl Analyzer {
                 };
 
                 let expected_params = match &self.scope_table[scope_idx].symbols[sym_idx].kind {
-                    SymbolKind::Function { params, .. } => params.len(),
+                    SymbolKind::Function { params, .. } => params.clone(),
                     _ => {
                         return Err(CompileError::SemanticError {
                             message: format!("'{}' is not a function", name),
@@ -296,20 +300,47 @@ impl Analyzer {
                     }
                 };
 
-                if args.len() != expected_params {
+                if args.len() != expected_params.len() {
                     return Err(CompileError::SemanticError {
                         message: format!(
                             "'{}' expects {} args, got {}",
                             name,
-                            expected_params,
+                            expected_params.len(),
                             args.len()
                         ),
                         line: *line,
                     });
                 }
 
-                for arg in args.iter_mut() {
+                for (i, arg) in args.iter_mut().enumerate() {
                     self.analyze_expression(arg, *line)?;
+
+                    let arg_type = self.resolve_type(arg).unwrap_or(Type::Void);
+
+                    let expected_type = &expected_params[i].param_type;
+
+                    let is_big_int_to_i8 = matches!(arg_type, Type::Int16 | Type::Int32)
+                        && expected_type == &Type::Int8;
+
+                    let is_ptr_to_void_ptr = matches!(arg_type, Type::Pointer(..))
+                        && expected_type == &Type::Pointer(Box::new(Type::Void));
+
+                    if &arg_type != expected_type
+                        && expected_type != &Type::Void
+                        && !is_big_int_to_i8
+                        && !is_ptr_to_void_ptr
+                    {
+                        return Err(CompileError::SemanticError {
+                            message: format!(
+                                "argument {} to '{}' expected type '{}', got '{}'",
+                                i + 1,
+                                name,
+                                expected_type,
+                                arg_type,
+                            ),
+                            line: *line,
+                        });
+                    }
                 }
 
                 Ok(Some(SemanticStatement::SemanticFunctionCall {
@@ -342,7 +373,7 @@ impl Analyzer {
                     self.analyze_expression(expr, *line)?;
 
                     let expr_type = self.resolve_type(expr);
-                    if let Some(et) = expr_type {
+                    if let Some(et) = expr_type.clone() {
                         if et != *var_type
                             && *var_type != Type::Void
                             && et != Type::Pointer(Box::new(Type::Void))
@@ -351,7 +382,10 @@ impl Analyzer {
                             let is_int_literal_to_int = matches!(expr, Expression::Integer(_))
                                 && matches!(var_type, Type::Int8 | Type::Int16 | Type::Int32);
 
-                            if !is_int_literal_to_int {
+                            if !is_int_literal_to_int
+                                && expr_type != Some(Type::Number)
+                                && et != Type::Void
+                            {
                                 self.warnings.push(SemanticWarning {
                                     warning_type: WarningType::TypeMismatch,
                                     name: var_name.to_string(),
@@ -620,6 +654,20 @@ impl Analyzer {
                     body: sem_body,
                 }))
             }
+
+            Statement::Block(stmts) => {
+                self.enter_scope(ScopeType::IfBody {
+                    parent: SymbolId(self.current_scope_id),
+                });
+                let mut sem_body = Vec::new();
+                for s in stmts {
+                    if let Some(sem) = self.analyze_statement(s)? {
+                        sem_body.push(sem);
+                    }
+                }
+                self.exit_scope();
+                Ok(Some(SemanticStatement::SemanticBlock(sem_body)))
+            }
         }
     }
 
@@ -843,6 +891,22 @@ impl Analyzer {
                             });
                         }
                     }
+
+                    UnaryOperator::Neg => {
+                        if !matches!(
+                            operand_type,
+                            Some(Type::Int8) | Some(Type::Int16) | Some(Type::Int32)
+                        ) {
+                            self.warnings.push(SemanticWarning {
+                                warning_type: WarningType::TypeMismatch,
+                                name: "minus operator".to_string(),
+                                message: WarningType::TypeMismatch.get_message(
+                                    "not operator requires number type operand".to_string(),
+                                ),
+                                line,
+                            });
+                        }
+                    }
                 }
             }
 
@@ -997,6 +1061,7 @@ impl Analyzer {
                     let inner = self.resolve_type(operand)?;
                     Some(Type::Pointer(Box::new(inner)))
                 }
+                UnaryOperator::Neg => Some(Type::Number),
             },
 
             Expression::BinaryOperation { op, left, .. } => {
@@ -1057,6 +1122,7 @@ impl Analyzer {
             Type::Int8 | Type::Bool => 1,
             Type::Int16 => 2,
             Type::Int32 => 4,
+            Type::Number => 4,
             Type::Pointer(_) => 4,
             Type::Void => 0,
             Type::Struct(name) => self

@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 pub enum TypeSize {
     Void,
     Byte,
@@ -13,6 +15,7 @@ pub enum Type {
     Int8,
     Int16,
     Int32,
+    Number,
     Pointer(Box<Type>),
     Struct(String),
 }
@@ -25,6 +28,7 @@ impl Type {
             Type::Int8 => TypeSize::Byte,
             Type::Int16 => TypeSize::HalfWord,
             Type::Int32 => TypeSize::Word,
+            Type::Number => TypeSize::Word,
             Type::Pointer(_) => TypeSize::Word, // 4 bytes on mips, regardless of pointee
             Type::Struct(_) => TypeSize::Word, // structs are always accessed by address (pointer-sized)
         }
@@ -38,6 +42,21 @@ impl Type {
         match self {
             Type::Pointer(inner) => Some(inner),
             _ => None,
+        }
+    }
+}
+
+impl Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Void => write!(f, "void"),
+            Type::Bool => write!(f, "bool"),
+            Type::Int8 => write!(f, "i8"),
+            Type::Int16 => write!(f, "i16"),
+            Type::Int32 => write!(f, "i32"),
+            Type::Number => write!(f, "number"),
+            Type::Pointer(inner) => write!(f, "{}%", inner),
+            Type::Struct(name) => write!(f, "{}", name),
         }
     }
 }

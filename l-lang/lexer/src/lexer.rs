@@ -280,6 +280,11 @@ impl Lexer {
                 Ok(Token::PlusEqual)
             }
 
+            '+' => {
+                self.advance();
+                Ok(Token::PlusPlus)
+            }
+
             _ => Ok(Token::Plus),
         }
     }
@@ -293,6 +298,11 @@ impl Lexer {
             '=' => {
                 self.advance();
                 Ok(Token::MinusEqual)
+            }
+
+            '-' => {
+                self.advance();
+                Ok(Token::MinusMinus)
             }
 
             _ => Ok(Token::Minus),

@@ -73,6 +73,8 @@ pub enum Statement {
         condition: Expression,
     },
 
+    Block(Vec<Statement>),
+
     Assembly {
         body: Vec<String>,
     },

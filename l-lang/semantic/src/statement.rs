@@ -65,6 +65,8 @@ pub enum SemanticStatement {
         condition: Expression,
     },
 
+    SemanticBlock(Vec<SemanticStatement>),
+
     SemanticAssembly {
         body: Vec<String>,
     },

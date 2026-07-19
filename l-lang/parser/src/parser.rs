@@ -12,7 +12,7 @@ pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
     line: usize,
-    pub label_count: usize,
+    label_count: usize,
 }
 
 impl Parser {
@@ -35,6 +35,10 @@ impl Parser {
         Ok(Program { body: statements })
     }
 
+    pub fn get_label_count(&self) -> usize {
+        self.label_count
+    }
+
     fn parse_statement(&mut self) -> Result<Statement> {
         match self.peek() {
             Token::Void | Token::Bool | Token::I32 | Token::I16 | Token::I8 => {
@@ -54,6 +58,7 @@ impl Parser {
 
             Token::If => self.parse_if(),
             Token::While => self.parse_while(),
+            Token::For => self.parse_for(),
 
             Token::Identifier(_) => {
                 let mut offset = 1;
@@ -141,6 +146,23 @@ impl Parser {
                         },
                         line: self.line,
                     })
+                } else if matches!(self.peek(), Token::PlusPlus | Token::MinusMinus) {
+                    let op = match self.peek() {
+                        Token::PlusPlus => BinaryOperator::Add,
+                        Token::MinusMinus => BinaryOperator::Sub,
+                        _ => unreachable!(),
+                    };
+                    self.advance();
+                    self.expect(Token::Semicolon)?;
+                    Ok(Statement::Assign {
+                        var_name: name.clone(),
+                        value: Expression::BinaryOperation {
+                            op,
+                            left: Box::new(Expression::Identifier(name)),
+                            right: Box::new(Expression::Integer(1)),
+                        },
+                        line: self.line,
+                    })
                 } else {
                     self.expect(Token::Equal)?;
                     let value = self.parse_expresion()?;
@@ -224,8 +246,8 @@ impl Parser {
                 Ok(Statement::NewLine)
             }
 
-            _ => Err(CompileError::CompilerError {
-                message: format!("{:?} not implemented in parse_statement", self.peek()),
+            _ => Err(CompileError::ParseError {
+                message: format!("{:?} is not a statement", self.peek()),
                 line: self.line,
             }),
         }
@@ -291,13 +313,6 @@ impl Parser {
                 break;
             }
             self.advance();
-        }
-
-        if params.len() > 4 {
-            return Err(CompileError::ParseError {
-                message: String::from("Function has more than 4 params"),
-                line: self.line,
-            });
         }
 
         Ok(params)
@@ -417,6 +432,78 @@ impl Parser {
             cond_label: self.new_label(),
             condition,
         })
+    }
+
+    fn parse_for(&mut self) -> Result<Statement> {
+        self.advance(); // 'for'
+        self.expect(Token::LeftParen)?;
+
+        let init = self.parse_statement()?;
+
+        let condition = self.parse_expresion()?;
+        self.expect(Token::Semicolon)?;
+
+        let increment = self.parse_for_increment_stmt()?;
+
+        self.expect(Token::RightParen)?;
+        self.expect(Token::LeftBrace)?;
+        let mut body = self.parse_block()?;
+        self.expect(Token::RightBrace)?;
+        body.push(increment);
+
+        Ok(Statement::Block(vec![
+            init,
+            Statement::While {
+                body_label: self.new_label(),
+                cond_label: self.new_label(),
+                condition,
+                body,
+            },
+        ]))
+    }
+
+    fn parse_for_increment_stmt(&mut self) -> Result<Statement> {
+        let line = self.line;
+        let name = self.parse_identifier()?;
+        if matches!(self.peek(), Token::PlusEqual | Token::MinusEqual) {
+            let op = match self.peek() {
+                Token::PlusEqual => BinaryOperator::Add,
+                Token::MinusEqual => BinaryOperator::Sub,
+                _ => unreachable!(),
+            };
+            self.advance();
+            let rhs = self.parse_expresion()?;
+            Ok(Statement::Assign {
+                var_name: name.clone(),
+                value: Expression::BinaryOperation {
+                    op,
+                    left: Box::new(Expression::Identifier(name)),
+                    right: Box::new(rhs),
+                },
+                line,
+            })
+        } else if matches!(self.peek(), Token::PlusPlus | Token::MinusMinus) {
+            let op = match self.peek() {
+                Token::PlusPlus => BinaryOperator::Add,
+                Token::MinusMinus => BinaryOperator::Sub,
+                _ => unreachable!(),
+            };
+            self.advance();
+            Ok(Statement::Assign {
+                var_name: name.clone(),
+                value: Expression::BinaryOperation {
+                    op,
+                    left: Box::new(Expression::Identifier(name)),
+                    right: Box::new(Expression::Integer(1)),
+                },
+                line: self.line,
+            })
+        } else {
+            Err(CompileError::ParseError {
+                message: "expected += / ++ or -= / -- in for-loop increment".to_string(),
+                line,
+            })
+        }
     }
 
     fn parse_expresion(&mut self) -> Result<Expression> {
@@ -547,6 +634,16 @@ impl Parser {
             });
         }
 
+        if matches!(self.peek(), Token::Minus) {
+            self.advance();
+            let operand = self.parse_unary()?;
+
+            return Ok(Expression::UnaryOperation {
+                op: UnaryOperator::Neg,
+                operand: Box::new(operand),
+            });
+        }
+
         let mut expr = self.parse_primary()?;
         while matches!(self.peek(), Token::LeftBracket | Token::Period) {
             if matches!(self.peek(), Token::LeftBracket) {
@@ -590,7 +687,7 @@ impl Parser {
                 Ok(Expression::String(str))
             }
 
-            Token::Size => {
+            Token::SizeOf => {
                 self.advance();
                 let t = self.parse_type()?;
                 Ok(Expression::SizeOf(t))

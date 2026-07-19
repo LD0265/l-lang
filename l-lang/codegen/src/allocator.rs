@@ -6,9 +6,10 @@ use semantic::symbol::SymbolId;
 pub struct Allocator {
     stack_variables: HashMap<SymbolId, usize>,
     spill_slots: HashMap<usize, usize>,
-    array_slots: HashMap<usize, usize>, // slot -> base offset
+    array_slots: HashMap<usize, usize>,
     ra_offset: Option<usize>,
     stack_size: usize,
+    outgoing_size: usize,
 }
 
 impl Allocator {
@@ -19,6 +20,7 @@ impl Allocator {
             array_slots: HashMap::new(),
             ra_offset: None,
             stack_size: 0,
+            outgoing_size: 0,
         }
     }
 
@@ -90,6 +92,11 @@ impl Allocator {
         self.stack_size = (self.stack_size + 3) & !3;
         self.stack_variables.insert(id.clone(), self.stack_size);
         self.stack_size += size_bytes;
+    }
+
+    pub fn reserve_outgoing(&mut self, size: usize) {
+        self.outgoing_size = size;
+        self.stack_size = size;
     }
 
     // needed for mips apparently

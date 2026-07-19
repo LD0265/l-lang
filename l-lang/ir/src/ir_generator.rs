@@ -26,6 +26,8 @@ pub struct IrGenerator {
     spill_counter: usize,
     scope_cursor: usize,
     struct_table: HashMap<String, StructDef>,
+    string_counter: usize,
+    string_table: Vec<(String, String)>,
 }
 
 impl IrGenerator {
@@ -39,12 +41,14 @@ impl IrGenerator {
             spill_counter: 0,
             scope_cursor: 0,
             struct_table,
+            string_counter: 0,
+            string_table: Vec::new(),
         }
     }
 
     pub fn generate(&mut self) -> IrProgram {
         let mut functions = Vec::new();
-        let called = self.collect_called_functions(&self.program.body);
+        let called = self.collect_reachable_functions();
 
         for stmt in &self.program.body.clone() {
             if let SemanticStatement::SemanticFunction {
@@ -117,7 +121,10 @@ impl IrGenerator {
             }
         }
 
-        IrProgram { functions }
+        IrProgram {
+            functions,
+            strings: self.string_table.clone(),
+        }
     }
 
     fn fresh_reg(&mut self) -> IrReg {
@@ -134,6 +141,41 @@ impl IrGenerator {
         if let IrReg::Temp(n) = reg {
             self.free_regs.push(n);
         }
+    }
+
+    fn collect_reachable_functions(&self) -> HashSet<String> {
+        let mut reachable = HashSet::new();
+        let mut work = vec!["main".to_string()];
+
+        while let Some(name) = work.pop() {
+            if !reachable.insert(name.clone()) {
+                continue;
+            }
+
+            let Some(SemanticStatement::SemanticFunction { body, .. }) =
+                self.program.body.iter().find(|stmt| {
+                    matches!(
+                        stmt,
+                        SemanticStatement::SemanticFunction {
+                            name: n,
+                            ..
+                        } if n == &name
+                    )
+                })
+            else {
+                continue;
+            };
+
+            let called = self.collect_called_functions(body);
+
+            for f in called {
+                if !reachable.contains(&f) {
+                    work.push(f);
+                }
+            }
+        }
+
+        reachable
     }
 
     fn collect_called_functions(&self, body: &[SemanticStatement]) -> HashSet<String> {
@@ -185,9 +227,15 @@ impl IrGenerator {
                     self.collect_called_in_expr(condition, &mut called);
                     called.extend(self.collect_called_functions(body));
                 }
+
+                SemanticStatement::SemanticBlock(stmts) => {
+                    called.extend(self.collect_called_functions(stmts));
+                }
+
                 SemanticStatement::SemanticDerefAssign { value, .. } => {
                     self.collect_called_in_expr(value, &mut called);
                 }
+
                 SemanticStatement::SemanticLValueAssign { value, .. } => {
                     self.collect_called_in_expr(value, &mut called);
                 }
@@ -260,11 +308,27 @@ impl IrGenerator {
                 symbol,
             });
 
-            rest.push(IrInstruction::StoreStack {
-                ir_type,
-                symbol,
-                src: IrReg::Arg(i),
-            });
+            if i < 4 {
+                rest.push(IrInstruction::StoreStack {
+                    ir_type,
+                    symbol,
+                    src: IrReg::Arg(i),
+                });
+            } else {
+                let temp = self.fresh_reg();
+
+                rest.push(IrInstruction::LoadArgStack {
+                    ir_type: ir_type.clone(),
+                    dest: temp,
+                    offset: (i - 4) * 4,
+                });
+
+                rest.push(IrInstruction::StoreStack {
+                    ir_type,
+                    symbol,
+                    src: temp,
+                });
+            }
 
             i += 1;
         }
@@ -327,7 +391,19 @@ impl IrGenerator {
                     }
 
                     if let Some(expr) = initializer {
-                        let (reg, store_instrs) = self.emit_expression(expr);
+                        let elem_hint = match (var_type, expr) {
+                            (Type::Pointer(inner), Expression::Array { .. }) => {
+                                Some((**inner).clone())
+                            }
+                            _ => None,
+                        };
+
+                        let (reg, store_instrs) = if let Expression::Array { values, .. } = expr {
+                            self.emit_array_literal(values, elem_hint)
+                        } else {
+                            self.emit_expression(expr)
+                        };
+
                         rest.extend(store_instrs);
                         rest.push(IrInstruction::StoreStack {
                             ir_type: IrType::from(var_type),
@@ -339,14 +415,24 @@ impl IrGenerator {
             }
 
             SemanticStatement::SemanticFunctionCall { name, args, .. } => {
-                // evaluate each arg and move into $a0-$a3
                 for (i, arg) in args.iter().enumerate() {
                     let (reg, instrs) = self.emit_expression(arg);
                     rest.extend(instrs);
-                    rest.push(IrInstruction::StoreImm {
-                        dest: IrReg::Arg(i),
-                        value: IrValue::Reg(reg),
-                    });
+
+                    if i < 4 {
+                        rest.push(IrInstruction::StoreImm {
+                            dest: IrReg::Arg(i),
+                            value: IrValue::Reg(reg),
+                        });
+                    } else {
+                        rest.push(IrInstruction::StoreArgStack {
+                            ir_type: IrType::from(&self.resolve_expr_type(arg)),
+                            offset: (i - 4) * 4,
+                            src: reg,
+                        });
+                    }
+
+                    self.free_reg(reg);
                 }
 
                 rest.push(IrInstruction::Call {
@@ -515,18 +601,40 @@ impl IrGenerator {
 
             SemanticStatement::SemanticLValueAssign { target, value } => {
                 let (addr_reg, addr_instrs) = self.compute_lvalue_address(target);
+
+                let (spill_instrs, reload_instrs, addr_reg_final) = if Self::contains_call(value) {
+                    let slot = self.spill_counter;
+                    self.spill_counter += 1;
+                    let reloaded = self.fresh_reg();
+                    (
+                        vec![IrInstruction::SpillTemp {
+                            slot,
+                            src: addr_reg,
+                        }],
+                        vec![IrInstruction::LoadTemp {
+                            slot,
+                            dest: reloaded,
+                        }],
+                        reloaded,
+                    )
+                } else {
+                    (vec![], vec![], addr_reg)
+                };
+
                 let (val_reg, val_instrs) = self.emit_expression(value);
                 let store_type = self.resolve_expr_type(target);
 
                 rest.extend(addr_instrs);
+                rest.extend(spill_instrs);
                 rest.extend(val_instrs);
+                rest.extend(reload_instrs);
                 rest.push(IrInstruction::StoreIndirect {
                     ir_type: IrType::from(&store_type),
-                    addr: addr_reg,
+                    addr: addr_reg_final,
                     src: val_reg,
                 });
 
-                self.free_reg(addr_reg);
+                self.free_reg(addr_reg_final);
                 self.free_reg(val_reg);
             }
 
@@ -540,6 +648,14 @@ impl IrGenerator {
                     });
                 }
                 rest.push(IrInstruction::Ret);
+            }
+
+            SemanticStatement::SemanticBlock(stmts) => {
+                let saved = self.enter_block_scope();
+                for s in stmts {
+                    self.emit_statement(s, allocs, rest);
+                }
+                self.exit_block_scope(saved);
             }
 
             SemanticStatement::SemanticAssembly { body } => {
@@ -640,6 +756,20 @@ impl IrGenerator {
                     });
                     (dest, instrs)
                 }
+
+                UnaryOperator::Neg => {
+                    let (operand_reg, operand_instrs) = self.emit_expression(operand);
+                    let dest = self.fresh_reg();
+                    let mut instrs = operand_instrs;
+
+                    instrs.push(IrInstruction::UnaryOp {
+                        op: UnaryOperator::Neg,
+                        dest,
+                        operand: operand_reg,
+                    });
+
+                    (dest, instrs)
+                }
             },
 
             Expression::BinaryOperation { op, left, right } => {
@@ -687,74 +817,8 @@ impl IrGenerator {
             }
 
             Expression::Array { values, .. } => {
-                if values.is_empty() {
-                    let dest = self.fresh_reg();
-                    return (
-                        dest,
-                        vec![IrInstruction::StoreImm {
-                            dest,
-                            value: IrValue::Immediate(0),
-                        }],
-                    );
-                }
-
-                let elem_type = self.resolve_expr_type(&values[0]);
-                let ir_elem_type = IrType::from(&elem_type);
-                let elem_size = ir_elem_type.size_bytes() as i32;
-
-                let slot = self.spill_counter;
-                self.spill_counter += 1;
-
-                let mut instrs = Vec::new();
-
-                instrs.push(IrInstruction::AllocArray {
-                    slot,
-                    elem_type: ir_elem_type.clone(),
-                    count: values.len(),
-                });
-
-                let base_reg = self.fresh_reg();
-                instrs.push(IrInstruction::LoadArrayBase {
-                    dest: base_reg,
-                    slot,
-                });
-
-                for (i, val) in values.iter().enumerate() {
-                    let (val_reg, val_instrs) = self.emit_expression(val);
-                    instrs.extend(val_instrs);
-
-                    if i == 0 {
-                        instrs.push(IrInstruction::StoreIndirect {
-                            ir_type: ir_elem_type.clone(),
-                            addr: base_reg,
-                            src: val_reg,
-                        });
-                    } else {
-                        let offset_reg = self.fresh_reg();
-                        let addr_reg = self.fresh_reg();
-                        instrs.push(IrInstruction::StoreImm {
-                            dest: offset_reg,
-                            value: IrValue::Immediate(i as i32 * elem_size),
-                        });
-                        instrs.push(IrInstruction::BinaryOp {
-                            op: BinaryOperator::Add,
-                            dest: addr_reg,
-                            left: base_reg,
-                            right: offset_reg,
-                        });
-                        instrs.push(IrInstruction::StoreIndirect {
-                            ir_type: ir_elem_type.clone(),
-                            addr: addr_reg,
-                            src: val_reg,
-                        });
-                        self.free_reg(offset_reg);
-                        self.free_reg(addr_reg);
-                    }
-
-                    self.free_reg(val_reg);
-                }
-
-                (base_reg, instrs) // base_reg holds pointer to first element
+                let elem_type_hint = self.resolve_expr_type(&values[0]);
+                self.emit_array_literal(values, Some(elem_type_hint))
             }
 
             Expression::Index { base, index } => {
@@ -853,10 +917,21 @@ impl IrGenerator {
                 for (i, arg) in args.iter().enumerate() {
                     let (reg, arg_instrs) = self.emit_expression(arg);
                     instrs.extend(arg_instrs);
-                    instrs.push(IrInstruction::StoreImm {
-                        dest: IrReg::Arg(i),
-                        value: IrValue::Reg(reg),
-                    });
+
+                    if i < 4 {
+                        instrs.push(IrInstruction::StoreImm {
+                            dest: IrReg::Arg(i),
+                            value: IrValue::Reg(reg),
+                        });
+                    } else {
+                        instrs.push(IrInstruction::StoreArgStack {
+                            ir_type: IrType::from(&self.resolve_expr_type(arg)),
+                            offset: (i - 4) * 4,
+                            src: reg,
+                        });
+                    }
+
+                    self.free_reg(reg);
                 }
 
                 instrs.push(IrInstruction::Call {
@@ -873,69 +948,99 @@ impl IrGenerator {
             }
 
             Expression::String(s) => {
-                let bytes: Vec<i8> = s
-                    .bytes()
-                    .map(|b| b as i8)
-                    .chain(std::iter::once(0))
-                    .collect();
-                let count = bytes.len();
-
-                let slot = self.spill_counter;
-                self.spill_counter += 1;
-
-                let mut instrs = Vec::new();
-
-                instrs.push(IrInstruction::AllocArray {
-                    slot,
-                    elem_type: IrType::I8,
-                    count,
-                });
-
-                let base_reg = self.fresh_reg();
-                instrs.push(IrInstruction::LoadArrayBase {
-                    dest: base_reg,
-                    slot,
-                });
-
-                for (i, &byte) in bytes.iter().enumerate() {
-                    let (val_reg, val_instrs) =
-                        self.emit_expression(&Expression::Integer(byte as i32));
-                    instrs.extend(val_instrs);
-
-                    if i == 0 {
-                        instrs.push(IrInstruction::StoreIndirect {
-                            ir_type: IrType::I8,
-                            addr: base_reg,
-                            src: val_reg,
-                        });
-                    } else {
-                        let offset_reg = self.fresh_reg();
-                        let addr_reg = self.fresh_reg();
-                        instrs.push(IrInstruction::StoreImm {
-                            dest: offset_reg,
-                            value: IrValue::Immediate(i as i32),
-                        });
-                        instrs.push(IrInstruction::BinaryOp {
-                            op: BinaryOperator::Add,
-                            dest: addr_reg,
-                            left: base_reg,
-                            right: offset_reg,
-                        });
-                        instrs.push(IrInstruction::StoreIndirect {
-                            ir_type: IrType::I8,
-                            addr: addr_reg,
-                            src: val_reg,
-                        });
-                        self.free_reg(offset_reg);
-                        self.free_reg(addr_reg);
-                    }
-
-                    self.free_reg(val_reg);
+                let dest = self.fresh_reg();
+                if let Some((label, _)) = self.string_table.iter().find(|(_, val)| val == s) {
+                    (
+                        dest,
+                        vec![IrInstruction::LoadStringAddr {
+                            dest,
+                            label: label.clone(),
+                        }],
+                    )
+                } else {
+                    let label = format!("str{}", self.string_counter);
+                    self.string_counter += 1;
+                    self.string_table.push((label.clone(), s.clone()));
+                    let dest = self.fresh_reg();
+                    (dest, vec![IrInstruction::LoadStringAddr { dest, label }])
                 }
-
-                (base_reg, instrs)
             }
         }
+    }
+
+    fn emit_array_literal(
+        &mut self,
+        values: &[Box<Expression>],
+        elem_type_hint: Option<Type>,
+    ) -> (IrReg, Vec<IrInstruction>) {
+        if values.is_empty() {
+            let dest = self.fresh_reg();
+            return (
+                dest,
+                vec![IrInstruction::StoreImm {
+                    dest,
+                    value: IrValue::Immediate(0),
+                }],
+            );
+        }
+
+        let elem_type = elem_type_hint.unwrap_or_else(|| self.resolve_expr_type(&values[0]));
+        let ir_elem_type = IrType::from(&elem_type);
+        let elem_size = ir_elem_type.size_bytes() as i32;
+
+        let slot = self.spill_counter;
+        self.spill_counter += 1;
+
+        let mut instrs = Vec::new();
+
+        instrs.push(IrInstruction::AllocArray {
+            slot,
+            elem_type: ir_elem_type.clone(),
+            count: values.len(),
+        });
+
+        let base_reg = self.fresh_reg();
+        instrs.push(IrInstruction::LoadArrayBase {
+            dest: base_reg,
+            slot,
+        });
+
+        for (i, val) in values.iter().enumerate() {
+            let (val_reg, val_instrs) = self.emit_expression(val);
+            instrs.extend(val_instrs);
+
+            if i == 0 {
+                instrs.push(IrInstruction::StoreIndirect {
+                    ir_type: ir_elem_type.clone(),
+                    addr: base_reg,
+                    src: val_reg,
+                });
+            } else {
+                let offset_reg = self.fresh_reg();
+                let addr_reg = self.fresh_reg();
+                instrs.push(IrInstruction::StoreImm {
+                    dest: offset_reg,
+                    value: IrValue::Immediate(i as i32 * elem_size),
+                });
+                instrs.push(IrInstruction::BinaryOp {
+                    op: BinaryOperator::Add,
+                    dest: addr_reg,
+                    left: base_reg,
+                    right: offset_reg,
+                });
+                instrs.push(IrInstruction::StoreIndirect {
+                    ir_type: ir_elem_type.clone(),
+                    addr: addr_reg,
+                    src: val_reg,
+                });
+                self.free_reg(offset_reg);
+                self.free_reg(addr_reg);
+            }
+
+            self.free_reg(val_reg);
+        }
+
+        (base_reg, instrs) // base_reg holds pointer to first element
     }
 
     fn lookup(&self, id: &SymbolId) -> &Symbol {
@@ -979,6 +1084,7 @@ impl IrGenerator {
                     other => panic!("cannot dereference non-pointer type {:?}", other),
                 },
                 UnaryOperator::Not => Type::Bool,
+                UnaryOperator::Neg => Type::Number,
             },
             Expression::Integer(_) => Type::Int32,
             Expression::Bool(_) => Type::Bool,
@@ -1189,6 +1295,7 @@ impl IrGenerator {
             Type::Int8 | Type::Bool => 1,
             Type::Int16 => 2,
             Type::Int32 => 4,
+            Type::Number => 4,
             Type::Pointer(_) => 4,
             Type::Void => 0,
             Type::Struct(name) => self

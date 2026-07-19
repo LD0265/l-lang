@@ -22,6 +22,7 @@ impl IrType {
             Type::Int8 => IrType::I8,
             Type::Int16 => IrType::I16,
             Type::Int32 => IrType::I32,
+            Type::Number => IrType::I32,
             Type::Bool => IrType::Bool,
             Type::Void => IrType::Void,
             Type::Pointer(_) => IrType::Word,
@@ -35,7 +36,7 @@ impl IrType {
             IrType::I16 => 2,
             IrType::I32 => 4,
             IrType::Bool => 1,
-            IrType::Void => 0,
+            IrType::Void => 4,
             IrType::Word => 4,
         }
     }
@@ -46,7 +47,7 @@ impl IrType {
             IrType::I16 => String::from("h"),
             IrType::I32 => String::from("w"),
             IrType::Bool => String::from("b"),
-            IrType::Void => String::from(""),
+            IrType::Void => String::from("w"),
             IrType::Word => String::from("w"),
         }
     }
@@ -82,7 +83,12 @@ impl IrReg {
 
 impl Display for IrReg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "${}{}", self.prefix(), self.value())
+        match self {
+            IrReg::Arg(n) if *n > 3 => {
+                panic!("Arg({}) cannot be represented as a register", n);
+            }
+            _ => write!(f, "${}{}", self.prefix(), self.value()),
+        }
     }
 }
 
@@ -179,6 +185,23 @@ pub enum IrInstruction {
     LoadArrayBase {
         dest: IrReg,
         slot: usize,
+    },
+
+    LoadStringAddr {
+        dest: IrReg,
+        label: String,
+    },
+
+    LoadArgStack {
+        ir_type: IrType,
+        dest: IrReg,
+        offset: usize,
+    },
+
+    StoreArgStack {
+        ir_type: IrType,
+        offset: usize,
+        src: IrReg,
     },
 
     BinaryOp {

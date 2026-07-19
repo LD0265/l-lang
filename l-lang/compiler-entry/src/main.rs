@@ -53,7 +53,7 @@ fn main() {
     };
 
     let output_path = args.output.as_str();
-    let assembly = compiler.compile();
+    let assembly = compiler.compile(args.time);
 
     let write_res = std::fs::write(output_path, assembly);
 

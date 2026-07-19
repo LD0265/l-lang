@@ -19,6 +19,7 @@ pub enum BinaryOperator {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOperator {
     Not,
+    Neg,
     Deref,
     AddressOf,
 }

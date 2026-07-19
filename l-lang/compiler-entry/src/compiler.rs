@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use codegen::mips::Mips;
 use ir::ir_generator::IrGenerator;
 use ir::program::IrProgram;
@@ -11,6 +13,7 @@ use util::error::Result;
 pub struct Compiler {
     semantic_program: SemanticProgram,
     ir: IrProgram,
+    pre_codegen_time: Duration,
 }
 
 impl Compiler {
@@ -24,7 +27,11 @@ impl Compiler {
         let stdio = include_str!("../../std/io.l");
         let stdmem = include_str!("../../std/mem.l");
         let stdstr = include_str!("../../std/string.l");
-        let stdlib = format!("{}{}{}", stdio, stdmem, stdstr);
+        let stdrand = include_str!("../../std/rand.l");
+        let stdlib = format!("{}{}{}{}", stdio, stdmem, stdstr, stdrand);
+
+        let start_time = Instant::now();
+
         let mut stdlib_lexer = Lexer::new(&stdlib);
         let stdlib_tokens = stdlib_lexer.tokenize()?;
         let mut user_lexer = Lexer::new(&source);
@@ -37,7 +44,7 @@ impl Compiler {
 
         let mut stdlib_parser = Parser::new(stdlib_tokens.clone(), 0);
         let stdlib_ast = stdlib_parser.parse()?;
-        let mut user_parser = Parser::new(user_tokens.clone(), stdlib_parser.label_count);
+        let mut user_parser = Parser::new(user_tokens.clone(), stdlib_parser.get_label_count());
         let user_ast = user_parser.parse()?;
 
         if print_ast {
@@ -60,6 +67,8 @@ impl Compiler {
         let mut i = IrGenerator::new(semantic_program.clone());
         let ir = i.generate();
 
+        let end_time = Instant::now();
+
         if print_ir {
             println!("{:#?}", ir);
         }
@@ -67,10 +76,11 @@ impl Compiler {
         Ok(Compiler {
             semantic_program: semantic_program.clone(),
             ir: ir.clone(),
+            pre_codegen_time: end_time - start_time,
         })
     }
 
-    pub fn compile(&self) -> String {
+    pub fn compile(&self, print_time: bool) -> String {
         for warning in &self.semantic_program.diagnostics {
             eprintln!(
                 "\x1b[1;33mWarning\x1b[0m [line {}]: {}",
@@ -79,7 +89,15 @@ impl Compiler {
         }
 
         let mut codegen = Mips::new(self.ir.clone());
+
+        let start_time = Instant::now();
         let mips_code = codegen.generate();
+        let end_time = Instant::now();
+
+        if print_time {
+            let total_time = (end_time - start_time) + self.pre_codegen_time;
+            println!("Compilation Finished, Took {:.2?}", total_time);
+        }
 
         mips_code
     }

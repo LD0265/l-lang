@@ -33,6 +33,10 @@ pub struct Args {
     #[arg(long)]
     pub tokens: bool,
 
+    /// Print how long compilation took to stdout
+    #[arg(long)]
+    pub time: bool,
+
     /// Name of the output asm file
     #[arg(short = 'S', default_value = "out.s")]
     pub output: String,
