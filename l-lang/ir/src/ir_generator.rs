@@ -419,24 +419,41 @@ impl IrGenerator {
             }
 
             SemanticStatement::SemanticFunctionCall { name, args, .. } => {
-                for (i, arg) in args.iter().enumerate() {
+                let mut slots = Vec::new();
+
+                for arg in args {
                     let (reg, instrs) = self.emit_expression(arg);
                     rest.extend(instrs);
+
+                    let slot = self.spill_counter;
+                    self.spill_counter += 1;
+                    rest.push(IrInstruction::SpillTemp { slot, src: reg });
+                    self.free_reg(reg);
+
+                    slots.push((slot, self.resolve_expr_type(arg)));
+                }
+
+                for (i, (slot, arg_type)) in slots.iter().enumerate() {
+                    let reloaded = self.fresh_reg();
+                    rest.push(IrInstruction::LoadTemp {
+                        slot: *slot,
+                        dest: reloaded,
+                    });
 
                     if i < 4 {
                         rest.push(IrInstruction::StoreImm {
                             dest: IrReg::Arg(i),
-                            value: IrValue::Reg(reg),
+                            value: IrValue::Reg(reloaded),
                         });
                     } else {
                         rest.push(IrInstruction::StoreArgStack {
-                            ir_type: IrType::from(&self.resolve_expr_type(arg)),
+                            ir_type: IrType::from(arg_type),
                             offset: (i - 4) * 4,
-                            src: reg,
+                            src: reloaded,
                         });
                     }
 
-                    self.free_reg(reg);
+                    self.free_reg(reloaded);
                 }
 
                 rest.push(IrInstruction::Call {
@@ -831,23 +848,43 @@ impl IrGenerator {
                 let elem_size = ir_elem_type.size_bytes() as i32;
 
                 let (base_reg, base_instrs) = self.emit_expression(base);
+
+                let (spill_instrs, reload_instrs, base_reg_final) = if Self::contains_call(index) {
+                    let slot = self.spill_counter;
+                    self.spill_counter += 1;
+                    let reloaded = self.fresh_reg();
+                    (
+                        vec![IrInstruction::SpillTemp {
+                            slot,
+                            src: base_reg,
+                        }],
+                        vec![IrInstruction::LoadTemp {
+                            slot,
+                            dest: reloaded,
+                        }],
+                        reloaded,
+                    )
+                } else {
+                    (vec![], vec![], base_reg)
+                };
+
                 let (index_reg, index_instrs) = self.emit_expression(index);
 
                 let mut instrs = base_instrs;
+                instrs.extend(spill_instrs);
                 instrs.extend(index_instrs);
+                instrs.extend(reload_instrs);
 
                 let addr_reg = self.fresh_reg();
 
                 if elem_size == 1 {
-                    // no scaling needed
                     instrs.push(IrInstruction::BinaryOp {
                         op: BinaryOperator::Add,
                         dest: addr_reg,
-                        left: base_reg,
+                        left: base_reg_final,
                         right: index_reg,
                     });
                 } else {
-                    // scale index by elem_size
                     let scale_reg = self.fresh_reg();
                     let size_reg = self.fresh_reg();
                     instrs.push(IrInstruction::StoreImm {
@@ -863,7 +900,7 @@ impl IrGenerator {
                     instrs.push(IrInstruction::BinaryOp {
                         op: BinaryOperator::Add,
                         dest: addr_reg,
-                        left: base_reg,
+                        left: base_reg_final,
                         right: scale_reg,
                     });
                     self.free_reg(scale_reg);
@@ -877,7 +914,7 @@ impl IrGenerator {
                     addr: addr_reg,
                 });
 
-                self.free_reg(base_reg);
+                self.free_reg(base_reg_final);
                 self.free_reg(index_reg);
                 self.free_reg(addr_reg);
 
@@ -1092,9 +1129,16 @@ impl IrGenerator {
             },
             Expression::Integer(_) => Type::Int32,
             Expression::Bool(_) => Type::Bool,
-            Expression::FunctionCall { .. } => {
-                panic!("resolve_expr_type: function call type resolution not wired here yet")
-            }
+            Expression::FunctionCall { name, .. } => self.program.scope_table[0]
+                .symbols
+                .iter()
+                .find_map(|s| match &s.kind {
+                    SymbolKind::Function { return_type, .. } if s.name == *name => {
+                        Some(return_type.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("resolve_expr_type: function '{}' not found", name)),
             Expression::BinaryOperation { left, .. } => self.resolve_expr_type(left),
 
             Expression::Array { values, .. } => {
