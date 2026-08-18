@@ -258,6 +258,10 @@ impl IrGenerator {
                 self.collect_called_in_expr(left, called);
                 self.collect_called_in_expr(right, called);
             }
+            Expression::Index { base, index } => {
+                self.collect_called_in_expr(base, called);
+                self.collect_called_in_expr(index, called);
+            }
             _ => {}
         }
     }

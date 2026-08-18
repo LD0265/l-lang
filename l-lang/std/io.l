@@ -120,6 +120,27 @@ void println_ptr(void% p) #[no_stack]
     return;
 }
 
+void print_hex(i32 n) #[no_stack]
+{
+    __asm__ {
+        li      $v0, 34
+        syscall
+    }
+    return;
+}
+
+void println_hex(i32 n) #[no_stack]
+{
+    __asm__ {
+        li      $v0, 34
+        syscall
+        li      $a0, 10
+        li      $v0, 11
+        syscall
+    }
+    return;
+}
+
 void printf(i8% fmt, void arg)
 {
     while (%fmt != 0) {
